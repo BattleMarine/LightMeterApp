@@ -144,13 +144,50 @@ EV = EV100 - log2(ISO / 100)
 우선 Android 네이티브 앱으로 개발합니다.
 
 - Language: Kotlin
-- UI: Jetpack Compose
-- Camera: CameraX
+- UI: Android View 기반 초기 화면, 이후 Jetpack Compose 전환 검토
+- Camera: 초기 화면은 프리뷰 자리표시자, 이후 CameraX 연결
 - Architecture: MVVM
-- Minimum SDK: 추후 결정
+- Minimum SDK: 26
+- Compile SDK: 35
 - Distribution: APK 직접 배포
 
 초기 개발은 노출 계산 로직과 UI 상태 모델을 카메라 연동과 분리해 테스트 가능하게 구성합니다.
+
+## 현재 앱 상태
+
+현재 Android 초기 앱 골격이 생성되어 있습니다.
+
+- 앱 이름: LightMeter
+- 패키지: `com.lightmeter.app`
+- 첫 화면: 라이트 미터 대시보드 형태의 초기 UI
+- 표시 요소: 카메라 프리뷰 영역, EV 표시, P/A/S/M 모드, 조리개/셔터/ISO 값
+- 카메라 권한 선언 및 런타임 권한 요청
+
+Debug APK 빌드:
+
+```powershell
+.\gradlew.bat assembleDebug
+```
+
+빌드 결과:
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+Android Studio에서 열기:
+
+1. Android Studio에서 `C:\Users\ktsvc\Documents\LightMeterApp` 폴더를 엽니다.
+2. Gradle Sync가 끝날 때까지 기다립니다.
+3. 실행 구성에서 `app` 모듈을 선택합니다.
+4. 에뮬레이터 또는 Android 기기를 선택한 뒤 Run을 실행합니다.
+
+현재 Gradle 구조는 Android Studio가 인식하기 쉬운 Kotlin DSL 기반 표준 구조입니다.
+
+- 루트 설정: `settings.gradle.kts`
+- 루트 빌드 설정: `build.gradle.kts`
+- 앱 모듈 빌드 설정: `app/build.gradle.kts`
+- Gradle Wrapper: `gradlew`, `gradlew.bat`, `gradle/wrapper/`
 
 ## 예상 프로젝트 구조
 
