@@ -28,7 +28,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ArrayAdapter
 import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -54,27 +56,87 @@ import kotlin.math.roundToLong
 class MainActivity : AppCompatActivity() {
     private val sceneEv100 = 16.0
 
-    private val apertureLabels = listOf(
-        "f/1.0", "f/1.4", "f/2.0", "f/2.8", "f/4.0",
-        "f/5.6", "f/8.0", "f/11.0", "f/16.0", "f/22.0", "f/32.0"
-    )
-    private val apertureValues = listOf(1.0, 1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0, 32.0)
-
-    private val shutterLabels = listOf(
-        "1/2s", "1/4", "1/8", "1/15", "1/30",
-        "1/60", "1/125", "1/250", "1/500", "1/1000", "1/2000"
-    )
-    private val shutterValues = listOf(
-        0.5, 0.25, 0.125, 1.0 / 15.0, 1.0 / 30.0,
-        1.0 / 60.0, 1.0 / 125.0, 1.0 / 250.0, 1.0 / 500.0, 1.0 / 1000.0, 1.0 / 2000.0
+    private data class DialPresetSet(
+        val apertureLabels: List<String>,
+        val apertureValues: List<Double>,
+        val shutterLabels: List<String>,
+        val shutterValues: List<Double>,
+        val isoLabels: List<String>,
+        val isoValues: List<Int>
     )
 
-    private val isoLabels = listOf("25", "50", "100", "200", "400", "800", "1600", "3200", "6400", "12800", "25600")
-    private val isoValues = listOf(25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600)
+    private val oneStopPreset = DialPresetSet(
+        apertureLabels = listOf(
+            "f/1.0", "f/1.4", "f/2.0", "f/2.8", "f/4.0",
+            "f/5.6", "f/8.0", "f/11.0", "f/16.0", "f/22.0", "f/32.0"
+        ),
+        apertureValues = listOf(1.0, 1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0, 22.0, 32.0),
+        shutterLabels = listOf(
+            "1/2s", "1/4", "1/8", "1/15", "1/30",
+            "1/60", "1/125", "1/250", "1/500", "1/1000", "1/2000"
+        ),
+        shutterValues = listOf(
+            0.5, 0.25, 0.125, 1.0 / 15.0, 1.0 / 30.0,
+            1.0 / 60.0, 1.0 / 125.0, 1.0 / 250.0, 1.0 / 500.0, 1.0 / 1000.0, 1.0 / 2000.0
+        ),
+        isoLabels = listOf("25", "50", "100", "200", "400", "800", "1600", "3200", "6400", "12800", "25600"),
+        isoValues = listOf(25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600)
+    )
+
+    private val halfStopPreset = DialPresetSet(
+        apertureLabels = listOf(
+            "f/1.0", "f/1.2", "f/1.4", "f/1.7", "f/2.0", "f/2.4", "f/2.8", "f/3.5", "f/4.0", "f/4.8",
+            "f/5.6", "f/6.7", "f/8.0", "f/9.5", "f/11", "f/13", "f/16", "f/19", "f/22", "f/27", "f/32"
+        ),
+        apertureValues = listOf(
+            1.0, 1.2, 1.4, 1.7, 2.0, 2.4, 2.8, 3.5, 4.0, 4.8,
+            5.6, 6.7, 8.0, 9.5, 11.0, 13.0, 16.0, 19.0, 22.0, 27.0, 32.0
+        ),
+        shutterLabels = listOf(
+            "1/2", "1/2.5", "1/3", "1/4", "1/5", "1/6", "1/8", "1/10", "1/13", "1/15",
+            "1/20", "1/25", "1/30", "1/40", "1/50", "1/60", "1/80", "1/100", "1/125", "1/160",
+            "1/200", "1/250", "1/320", "1/400", "1/500", "1/640", "1/800", "1/1000", "1/1250", "1/1600", "1/2000"
+        ),
+        shutterValues = listOf(
+            0.5, 0.4, 1.0 / 3.0, 0.25, 0.2, 1.0 / 6.0, 0.125, 0.1, 1.0 / 13.0, 1.0 / 15.0,
+            1.0 / 20.0, 1.0 / 25.0, 1.0 / 30.0, 1.0 / 40.0, 1.0 / 50.0, 1.0 / 60.0, 1.0 / 80.0, 1.0 / 100.0, 1.0 / 125.0, 1.0 / 160.0,
+            1.0 / 200.0, 1.0 / 250.0, 1.0 / 320.0, 1.0 / 400.0, 1.0 / 500.0, 1.0 / 640.0, 1.0 / 800.0, 1.0 / 1000.0, 1.0 / 1250.0, 1.0 / 1600.0, 1.0 / 2000.0
+        ),
+        isoLabels = listOf("25", "35", "50", "70", "100", "140", "200", "280", "400", "560", "800", "1100", "1600", "2200", "3200", "4500", "6400", "9000", "12800", "18000", "25600"),
+        isoValues = listOf(25, 35, 50, 70, 100, 140, 200, 280, 400, 560, 800, 1100, 1600, 2200, 3200, 4500, 6400, 9000, 12800, 18000, 25600)
+    )
+
+    private val thirdStopPreset = DialPresetSet(
+        apertureLabels = listOf(
+            "f/1.0", "f/1.1", "f/1.2", "f/1.4", "f/1.6", "f/1.8", "f/2.0", "f/2.2", "f/2.5", "f/2.8",
+            "f/3.2", "f/3.5", "f/4.0", "f/4.5", "f/5.0", "f/5.6", "f/6.3", "f/7.1", "f/8.0", "f/9.0",
+            "f/10", "f/11", "f/13", "f/14", "f/16", "f/18", "f/20", "f/22", "f/25", "f/29", "f/32"
+        ),
+        apertureValues = listOf(
+            1.0, 1.1, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.5, 2.8,
+            3.2, 3.5, 4.0, 4.5, 5.0, 5.6, 6.3, 7.1, 8.0, 9.0,
+            10.0, 11.0, 13.0, 14.0, 16.0, 18.0, 20.0, 22.0, 25.0, 29.0, 32.0
+        ),
+        shutterLabels = listOf(
+            "1/2", "1/2.5", "1/3", "1/4", "1/5", "1/6", "1/8", "1/10", "1/13", "1/15",
+            "1/20", "1/25", "1/30", "1/40", "1/50", "1/60", "1/80", "1/100", "1/125", "1/160",
+            "1/200", "1/250", "1/320", "1/400", "1/500", "1/640", "1/800", "1/1000", "1/1250", "1/1600", "1/2000"
+        ),
+        shutterValues = listOf(
+            0.5, 0.4, 1.0 / 3.0, 0.25, 0.2, 1.0 / 6.0, 0.125, 0.1, 1.0 / 13.0, 1.0 / 15.0,
+            1.0 / 20.0, 1.0 / 25.0, 1.0 / 30.0, 1.0 / 40.0, 1.0 / 50.0, 1.0 / 60.0, 1.0 / 80.0, 1.0 / 100.0, 1.0 / 125.0, 1.0 / 160.0,
+            1.0 / 200.0, 1.0 / 250.0, 1.0 / 320.0, 1.0 / 400.0, 1.0 / 500.0, 1.0 / 640.0, 1.0 / 800.0, 1.0 / 1000.0, 1.0 / 1250.0, 1.0 / 1600.0, 1.0 / 2000.0
+        ),
+        isoLabels = listOf("25", "32", "40", "50", "64", "80", "100", "125", "160", "200", "250", "320", "400", "500", "640", "800", "1000", "1250", "1600", "2000", "2500", "3200", "4000", "5000", "6400", "8000", "10000", "12800", "16000", "20000", "25600"),
+        isoValues = listOf(25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600)
+    )
+
+    private var activeDialPresetSet = oneStopPreset
 
     private var apertureIndex = 4
     private var shutterIndex = 10
     private var isoIndex = 2
+    private var adjustmentStepLabel = "1stop"
 
     private lateinit var previewView: PreviewView
     private lateinit var simulationTintView: View
@@ -85,6 +147,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var targetMetricValue: TextView
     private lateinit var currentMetricValue: TextView
     private lateinit var offsetMetricValue: TextView
+    private lateinit var apertureDialCard: DialValueCard
+    private lateinit var shutterDialCard: DialValueCard
+    private lateinit var isoDialCard: DialValueCard
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var activeCamera: Camera? = null
@@ -285,9 +350,59 @@ class MainActivity : AppCompatActivity() {
                 0.95f
             )
 
-            addView(sectionHeader("Controls", "Swipe each dial up or down"))
+            addView(controlHeader())
             addView(space(10))
             addView(controlCardsRow())
+        }
+    }
+
+    private fun controlHeader(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+
+            addView(
+                sectionHeader("Controls", "Swipe each dial up or down").apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+            )
+            addView(spaceHorizontal(10))
+            addView(stepModeSpinner())
+        }
+    }
+
+    private fun stepModeSpinner(): View {
+        val modes = listOf("1stop", "1/2stop", "1/3stop")
+        return Spinner(this).apply {
+            val adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_item,
+                modes
+            )
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            this.adapter = adapter
+            setSelection(modes.indexOf(adjustmentStepLabel).coerceAtLeast(0))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: android.widget.AdapterView<*>,
+                    view: View?,
+                    position: Int,
+                    id: Long
+                ) {
+                    adjustmentStepLabel = modes[position]
+                    applyAdjustmentStepMode(adjustmentStepLabel)
+                }
+
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>) = Unit
+            }
         }
     }
 
@@ -300,56 +415,90 @@ class MainActivity : AppCompatActivity() {
                 1f
             )
 
-            addView(
-                controlCard(
-                    title = "Aperture",
-                    labels = apertureLabels,
-                    initialIndex = apertureIndex,
-                    onIndexChanged = {
-                        apertureIndex = it
-                        onControlChanged()
-                    }
-                )
+            apertureDialCard = controlCard(
+                title = "Aperture",
+                labels = activeDialPresetSet.apertureLabels,
+                initialIndex = apertureIndex,
+                onIndexChanged = {
+                    apertureIndex = it
+                    onControlChanged()
+                }
             )
+            addView(apertureDialCard)
             addView(spaceHorizontal(8))
-            addView(
-                controlCard(
-                    title = "Shutter",
-                    labels = shutterLabels,
-                    initialIndex = shutterIndex,
-                    onIndexChanged = {
-                        shutterIndex = it
-                        onControlChanged()
-                    }
-                )
+            shutterDialCard = controlCard(
+                title = "Shutter",
+                labels = activeDialPresetSet.shutterLabels,
+                initialIndex = shutterIndex,
+                onIndexChanged = {
+                    shutterIndex = it
+                    onControlChanged()
+                }
             )
+            addView(shutterDialCard)
             addView(spaceHorizontal(8))
-            addView(
-                controlCard(
-                    title = "ISO",
-                    labels = isoLabels,
-                    initialIndex = isoIndex,
-                    onIndexChanged = {
-                        isoIndex = it
-                        onControlChanged()
-                    }
-                )
+            isoDialCard = controlCard(
+                title = "ISO",
+                labels = activeDialPresetSet.isoLabels,
+                initialIndex = isoIndex,
+                onIndexChanged = {
+                    isoIndex = it
+                    onControlChanged()
+                }
             )
+            addView(isoDialCard)
         }
+    }
+
+    private fun applyAdjustmentStepMode(mode: String) {
+        val nextPreset = when (mode) {
+            "1/2stop" -> halfStopPreset
+            "1/3stop" -> thirdStopPreset
+            else -> oneStopPreset
+        }
+        val currentAperture = activeDialPresetSet.apertureValues.getOrNull(apertureIndex)
+            ?: activeDialPresetSet.apertureValues.first()
+        val currentShutter = activeDialPresetSet.shutterValues.getOrNull(shutterIndex)
+            ?: activeDialPresetSet.shutterValues.first()
+        val currentIso = activeDialPresetSet.isoValues.getOrNull(isoIndex)
+            ?: activeDialPresetSet.isoValues.first()
+
+        activeDialPresetSet = nextPreset
+        apertureIndex = nearestIndexDouble(nextPreset.apertureValues, currentAperture)
+        shutterIndex = nearestIndexDouble(nextPreset.shutterValues, currentShutter)
+        isoIndex = nearestIndexInt(nextPreset.isoValues, currentIso.toDouble())
+
+        if (::apertureDialCard.isInitialized && ::shutterDialCard.isInitialized && ::isoDialCard.isInitialized) {
+            apertureDialCard.updateItems(nextPreset.apertureLabels, apertureIndex)
+            shutterDialCard.updateItems(nextPreset.shutterLabels, shutterIndex)
+            isoDialCard.updateItems(nextPreset.isoLabels, isoIndex)
+        }
+
+        onControlChanged()
+    }
+
+    private fun nearestIndexDouble(values: List<Double>, target: Double): Int {
+        return values.indices.minByOrNull { abs(values[it] - target) } ?: 0
+    }
+
+    private fun nearestIndexInt(values: List<Int>, target: Double): Int {
+        return values.indices.minByOrNull { abs(values[it] - target) } ?: 0
     }
 
     private fun controlCard(
         title: String,
         labels: List<String>,
         initialIndex: Int,
-        onIndexChanged: (Int) -> Unit
-    ): View {
+        onIndexChanged: (Int) -> Unit,
+        valueTextSizeSp: Float = 22f
+    ): DialValueCard {
         return DialValueCard(
             context = this,
             title = title,
             labels = labels,
             initialIndex = initialIndex,
-            onIndexChanged = onIndexChanged
+            onIndexChanged = onIndexChanged,
+            valueTextSizeSp = valueTextSizeSp
         )
     }
 
@@ -471,21 +620,28 @@ class MainActivity : AppCompatActivity() {
         var residualEv = targetSnapshot.virtualBrightnessEv100 - targetSnapshot.physicalBrightnessEv100
 
         if (supportsManualSensor) {
-            val isoTarget = chooseIsoForResidual(currentPhysical.iso, residualEv)
-            val brightnessAfterIso = brightnessForPhysical(currentPhysical.aperture, currentPhysical.shutterSeconds, isoTarget)
-            residualEv = targetSnapshot.virtualBrightnessEv100 - brightnessAfterIso
+            val requestedAperture = activeDialPresetSet.apertureValues[apertureIndex]
+            val requestedShutterSeconds = activeDialPresetSet.shutterValues[shutterIndex]
+            val requestedIso = activeDialPresetSet.isoValues[isoIndex]
 
-            val shutterTarget = chooseShutterForResidual(currentPhysical.shutterSeconds, residualEv)
-            val brightnessAfterShutter = brightnessForPhysical(currentPhysical.aperture, shutterTarget, isoTarget)
-            residualEv = targetSnapshot.virtualBrightnessEv100 - brightnessAfterShutter
+            val physicalAperture = chooseApertureForDevice(requestedAperture)?.toDouble()
+                ?: currentPhysical.aperture
+            val physicalTarget = resolvePhysicalExposureTarget(
+                requestedAperture = requestedAperture,
+                requestedShutterSeconds = requestedShutterSeconds,
+                requestedIso = requestedIso,
+                physicalAperture = physicalAperture
+            )
+            val physicalBrightnessAfterRequest = brightnessForPhysical(
+                physicalTarget.aperture,
+                physicalTarget.shutterSeconds,
+                physicalTarget.iso
+            )
+            residualEv = targetSnapshot.virtualBrightnessEv100 - physicalBrightnessAfterRequest
 
-            val exposureNanos = (shutterTarget * 1_000_000_000.0).roundToLong()
-            val finalExposureNanos = exposureTimeRange?.let {
-                exposureNanos.coerceIn(it.lower, it.upper)
-            } ?: exposureNanos
-            val finalIso = sensitivityRange?.let {
-                isoTarget.coerceIn(it.lower, it.upper)
-            } ?: isoTarget
+            val exposureNanos = (physicalTarget.shutterSeconds * 1_000_000_000.0).roundToLong()
+            val finalExposureNanos = exposureNanos
+            val finalIso = physicalTarget.iso
 
             val optionsBuilder = CaptureRequestOptions.Builder()
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
@@ -495,7 +651,7 @@ class MainActivity : AppCompatActivity() {
                 .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, finalExposureNanos)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, finalIso)
 
-            chooseApertureForDevice(currentPhysical.aperture)?.let { chosenAperture ->
+            chooseApertureForDevice(requestedAperture)?.let { chosenAperture ->
                 optionsBuilder.setCaptureRequestOption(CaptureRequest.LENS_APERTURE, chosenAperture)
             }
 
@@ -517,12 +673,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun currentPhysicalState(): PhysicalState {
-        val requestedAperture = apertureValues[apertureIndex]
+        val requestedAperture = activeDialPresetSet.apertureValues[apertureIndex]
         val currentAperture = latestPhysicalAperture
             ?: availableApertures.firstOrNull()?.toDouble()
             ?: requestedAperture
-        val currentShutter = latestPhysicalShutterSeconds ?: shutterValues[shutterIndex]
-        val currentIso = latestPhysicalIso ?: isoValues[isoIndex]
+        val currentShutter = latestPhysicalShutterSeconds ?: activeDialPresetSet.shutterValues[shutterIndex]
+        val currentIso = latestPhysicalIso ?: activeDialPresetSet.isoValues[isoIndex]
         return PhysicalState(
             aperture = currentAperture,
             shutterSeconds = currentShutter,
@@ -547,23 +703,180 @@ class MainActivity : AppCompatActivity() {
         return pickNearestSupportedShutter(targetShutterSeconds)
     }
 
-    private fun pickNearestSupportedIso(targetIso: Double): Int {
-        val supportedIsoValues = isoValues.filter { iso ->
-            sensitivityRange?.let { iso in it.lower..it.upper } ?: true
-        }.ifEmpty { isoValues }
+    private fun calculateEquivalentIso(
+        requestedAperture: Double,
+        requestedShutterSeconds: Double,
+        requestedIso: Int,
+        physicalAperture: Double,
+        physicalShutterSeconds: Double
+    ): Double {
+        val requestedSettingEv100 = calculateSettingEv100(requestedAperture, requestedShutterSeconds)
+        val physicalSettingEv100 = calculateSettingEv100(physicalAperture, physicalShutterSeconds)
+        return requestedIso * 2.0.pow(physicalSettingEv100 - requestedSettingEv100)
+    }
 
-        return supportedIsoValues.minByOrNull { abs(it - targetIso) } ?: isoValues[0]
+    private fun resolvePhysicalExposureTarget(
+        requestedAperture: Double,
+        requestedShutterSeconds: Double,
+        requestedIso: Int,
+        physicalAperture: Double
+    ): PhysicalExposureTarget {
+        val targetExposureFactor = exposureFactorForSetting(
+            requestedAperture,
+            requestedShutterSeconds,
+            requestedIso
+        )
+        val supportedShutters = activeDialPresetSet.shutterValues
+        val supportedIsos = activeDialPresetSet.isoValues
+
+        val preferredShutter = pickNearestSupportedShutter(
+            targetSeconds = requestedShutterSeconds,
+            candidates = supportedShutters
+        )
+        val preferredIso = requiredIsoForTargetExposure(
+            physicalAperture = physicalAperture,
+            shutterSeconds = preferredShutter,
+            targetExposureFactor = targetExposureFactor
+        )
+
+        if (preferredIso in supportedIsos.first().toDouble()..supportedIsos.last().toDouble()) {
+            val chosenIso = pickNearestSupportedIso(preferredIso, supportedIsos)
+            return PhysicalExposureTarget(
+                aperture = physicalAperture,
+                shutterSeconds = preferredShutter,
+                iso = chosenIso,
+                residualEv = targetExposureFactor - exposureFactorForSetting(
+                    physicalAperture,
+                    preferredShutter,
+                    chosenIso
+                )
+            )
+        }
+
+        val shutterKeepingCandidates = supportedShutters.mapNotNull { shutterSeconds ->
+            val requiredIso = requiredIsoForTargetExposure(
+                physicalAperture = physicalAperture,
+                shutterSeconds = shutterSeconds,
+                targetExposureFactor = targetExposureFactor
+            )
+            if (requiredIso in supportedIsos.first().toDouble()..supportedIsos.last().toDouble()) {
+                val chosenIso = pickNearestSupportedIso(requiredIso, supportedIsos)
+                val residualEv = targetExposureFactor - exposureFactorForSetting(
+                    physicalAperture,
+                    shutterSeconds,
+                    chosenIso
+                )
+                ExposureCandidate(
+                    shutterSeconds = shutterSeconds,
+                    iso = chosenIso,
+                    residualEv = residualEv,
+                    shutterDistance = abs(log2(shutterSeconds / requestedShutterSeconds)),
+                    isoDistance = abs(log2(chosenIso / requestedIso.toDouble()))
+                )
+            } else {
+                null
+            }
+        }
+
+        val bestShutterKeepingCandidate = shutterKeepingCandidates.minWithOrNull(
+            compareBy<ExposureCandidate> { abs(it.residualEv) }
+                .thenBy { it.shutterDistance }
+                .thenBy { it.isoDistance }
+        )
+        if (bestShutterKeepingCandidate != null) {
+            return PhysicalExposureTarget(
+                aperture = physicalAperture,
+                shutterSeconds = bestShutterKeepingCandidate.shutterSeconds,
+                iso = bestShutterKeepingCandidate.iso,
+                residualEv = bestShutterKeepingCandidate.residualEv
+            )
+        }
+
+        val fallbackCandidate = supportedShutters.flatMap { shutterSeconds ->
+            supportedIsos.map { iso ->
+                val residualEv = targetExposureFactor - exposureFactorForSetting(
+                    physicalAperture,
+                    shutterSeconds,
+                    iso
+                )
+                ExposureCandidate(
+                    shutterSeconds = shutterSeconds,
+                    iso = iso,
+                    residualEv = residualEv,
+                    shutterDistance = abs(log2(shutterSeconds / requestedShutterSeconds)),
+                    isoDistance = abs(log2(iso / requestedIso.toDouble()))
+                )
+            }
+        }.minWithOrNull(
+            compareBy<ExposureCandidate> { abs(it.residualEv) }
+                .thenBy { it.shutterDistance }
+                .thenBy { it.isoDistance }
+        ) ?: ExposureCandidate(
+            shutterSeconds = preferredShutter,
+            iso = pickNearestSupportedIso(preferredIso, supportedIsos),
+            residualEv = targetExposureFactor - exposureFactorForSetting(
+                physicalAperture,
+                preferredShutter,
+                pickNearestSupportedIso(preferredIso, supportedIsos)
+            ),
+            shutterDistance = 0.0,
+            isoDistance = 0.0
+        )
+
+        return PhysicalExposureTarget(
+            aperture = physicalAperture,
+            shutterSeconds = fallbackCandidate.shutterSeconds,
+            iso = fallbackCandidate.iso,
+            residualEv = fallbackCandidate.residualEv
+        )
+    }
+
+    private fun exposureFactorForSetting(aperture: Double, shutterSeconds: Double, iso: Int): Double {
+        return calculateSettingEv100(aperture, shutterSeconds) - isoAdjustmentEv100(iso)
+    }
+
+    private fun requiredIsoForTargetExposure(
+        physicalAperture: Double,
+        shutterSeconds: Double,
+        targetExposureFactor: Double
+    ): Double {
+        val settingEv100 = calculateSettingEv100(physicalAperture, shutterSeconds)
+        return 100.0 * 2.0.pow(settingEv100 - targetExposureFactor)
+    }
+
+    private fun pickNearestSupportedIso(targetIso: Double, candidates: List<Int>): Int {
+        return candidates.minByOrNull { abs(it - targetIso) } ?: candidates.first()
+    }
+
+    private fun pickNearestSupportedShutter(targetSeconds: Double, candidates: List<Double>): Double {
+        return candidates.minByOrNull { abs(it - targetSeconds) } ?: candidates.first()
+    }
+
+    private data class ExposureCandidate(
+        val shutterSeconds: Double,
+        val iso: Int,
+        val residualEv: Double,
+        val shutterDistance: Double,
+        val isoDistance: Double
+    )
+
+    private fun pickNearestSupportedIso(targetIso: Double): Int {
+        val supportedIsoValues = activeDialPresetSet.isoValues.filter { iso ->
+            sensitivityRange?.let { iso in it.lower..it.upper } ?: true
+        }.ifEmpty { activeDialPresetSet.isoValues }
+
+        return supportedIsoValues.minByOrNull { abs(it - targetIso) } ?: activeDialPresetSet.isoValues[0]
     }
 
     private fun pickNearestSupportedShutter(targetSeconds: Double): Double {
-        val supportedShutters = shutterValues.filter { seconds ->
+        val supportedShutters = activeDialPresetSet.shutterValues.filter { seconds ->
             exposureTimeRange?.let {
                 val nanos = (seconds * 1_000_000_000.0).roundToLong()
                 nanos in it.lower..it.upper
             } ?: true
-        }.ifEmpty { shutterValues }
+        }.ifEmpty { activeDialPresetSet.shutterValues }
 
-        return supportedShutters.minByOrNull { abs(it - targetSeconds) } ?: shutterValues[0]
+        return supportedShutters.minByOrNull { abs(it - targetSeconds) } ?: activeDialPresetSet.shutterValues[0]
     }
 
     private fun chooseApertureForDevice(requestedAperture: Double): Float? {
@@ -604,9 +917,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildExposureSnapshot(): ExposureSnapshot {
-        val requestedAperture = apertureValues[apertureIndex]
-        val requestedShutterSeconds = shutterValues[shutterIndex]
-        val requestedIso = isoValues[isoIndex]
+        val requestedAperture = activeDialPresetSet.apertureValues[apertureIndex]
+        val requestedShutterSeconds = activeDialPresetSet.shutterValues[shutterIndex]
+        val requestedIso = activeDialPresetSet.isoValues[isoIndex]
         val currentPhysical = currentPhysicalState()
 
         val physicalSettingEv100 = calculateSettingEv100(currentPhysical.aperture, currentPhysical.shutterSeconds)
@@ -784,6 +1097,13 @@ class MainActivity : AppCompatActivity() {
         val iso: Int
     )
 
+    private data class PhysicalExposureTarget(
+        val aperture: Double,
+        val shutterSeconds: Double,
+        val iso: Int,
+        val residualEv: Double
+    )
+
     private fun sectionHeader(title: String, subtitle: String): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -841,10 +1161,12 @@ class MainActivity : AppCompatActivity() {
         private val title: String,
         private val labels: List<String>,
         initialIndex: Int,
-        private val onIndexChanged: (Int) -> Unit
+        private val onIndexChanged: (Int) -> Unit,
+        private val valueTextSizeSp: Float
     ) : LinearLayout(context) {
         private val swipeThreshold = dp(28).toFloat()
         private var selectedIndex = initialIndex
+        private var currentLabels = labels
         private var lastSwipeDirection = 1
         private var downX = 0f
         private var downY = 0f
@@ -874,16 +1196,20 @@ class MainActivity : AppCompatActivity() {
             dialArtworkView = DialArtworkView(context)
             dialFrame.addView(dialArtworkView)
 
-            currentValueText = label(labels[selectedIndex], 28f, "#F5F1E8", bold = true).apply {
+            currentValueText = label(currentLabels[selectedIndex], valueTextSizeSp, "#F5F1E8", bold = true).apply {
                 gravity = Gravity.CENTER
+                maxLines = 1
+                setSingleLine(true)
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.CENTER
                 )
             }
-            incomingValueText = label("", 28f, "#F5F1E8", bold = true).apply {
+            incomingValueText = label("", valueTextSizeSp, "#F5F1E8", bold = true).apply {
                 gravity = Gravity.CENTER
+                maxLines = 1
+                setSingleLine(true)
                 alpha = 0f
                 visibility = View.INVISIBLE
                 layoutParams = FrameLayout.LayoutParams(
@@ -933,11 +1259,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun updateIndex(newIndex: Int, direction: Int) {
-            val clamped = newIndex.coerceIn(0, labels.lastIndex)
+            val clamped = newIndex.coerceIn(0, currentLabels.lastIndex)
             if (clamped == selectedIndex) return
             selectedIndex = clamped
-            animateValueChange(labels[selectedIndex], direction)
+            animateValueChange(currentLabels[selectedIndex], direction)
             onIndexChanged(selectedIndex)
+        }
+
+        fun updateItems(newLabels: List<String>, selectedIndex: Int) {
+            currentLabels = newLabels
+            this.selectedIndex = selectedIndex.coerceIn(0, newLabels.lastIndex)
+            currentValueText.text = currentLabels[this.selectedIndex]
+            currentValueText.translationY = 0f
+            currentValueText.alpha = 1f
+            incomingValueText.text = ""
+            incomingValueText.translationY = 0f
+            incomingValueText.alpha = 0f
+            incomingValueText.visibility = View.INVISIBLE
         }
 
         private fun animateValueChange(nextLabel: String, direction: Int) {
