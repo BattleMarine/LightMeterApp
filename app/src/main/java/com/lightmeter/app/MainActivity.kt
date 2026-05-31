@@ -1,5 +1,9 @@
 package com.lightmeter.app
 
+import android.animation.AnimatorSet
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ObjectAnimator
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -16,6 +20,8 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Range
 import android.view.Gravity
 import android.view.MotionEvent
@@ -36,8 +42,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -89,6 +97,11 @@ class MainActivity : AppCompatActivity() {
     private var latestPhysicalShutterSeconds: Double? = null
     private var latestPhysicalIso: Int? = null
     private var previewResidualEv: Double = 0.0
+    private val simulationTintHandler = Handler(Looper.getMainLooper())
+    private var pendingSimulationTintEv: Double = 0.0
+    private val applySimulationTintRunnable = Runnable {
+        updateSimulationTint(pendingSimulationTintEv)
+    }
     private var latestCaptureSummary = "Awaiting camera preview"
 
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -355,8 +368,6 @@ class MainActivity : AppCompatActivity() {
         targetMetricValue.text = metricValue("Scene\n${formatEv(sceneEv100)}")
         currentMetricValue.text = metricValue("Physical\n${formatEv(snapshot.physicalBrightnessEv100)}")
         offsetMetricValue.text = metricValue("Virtual\n${formatEv(snapshot.virtualBrightnessEv100)}")
-
-        updateSimulationTint(previewResidualEv)
     }
 
     private fun startCameraProvider() {
@@ -503,8 +514,6 @@ class MainActivity : AppCompatActivity() {
             updateCameraStatus("Preview only - simulating exposure")
         }
 
-        previewResidualEv = residualEv
-        updateSimulationTint(previewResidualEv)
     }
 
     private fun currentPhysicalState(): PhysicalState {
@@ -590,6 +599,7 @@ class MainActivity : AppCompatActivity() {
         previewResidualEv = snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100
         runOnUiThread {
             refreshExposureReadouts()
+            scheduleSimulationTint(previewResidualEv)
         }
     }
 
@@ -701,14 +711,20 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val intensity = min(0.75f, (abs(deltaEv) / 4.0).toFloat())
+        val intensity = min(0.65f, (abs(deltaEv) / 4.5).toFloat())
         if (intensity <= 0f) {
-            simulationTintView.alpha = 0f
+            simulationTintView.animate().alpha(0f).setDuration(140L).start()
             return
         }
 
         simulationTintView.setBackgroundColor(if (deltaEv >= 0) Color.WHITE else Color.BLACK)
-        simulationTintView.alpha = intensity
+        simulationTintView.animate().alpha(intensity).setDuration(140L).start()
+    }
+
+    private fun scheduleSimulationTint(deltaEv: Double) {
+        pendingSimulationTintEv = deltaEv
+        simulationTintHandler.removeCallbacks(applySimulationTintRunnable)
+        simulationTintHandler.postDelayed(applySimulationTintRunnable, 90L)
     }
 
     private fun calculateSettingEv100(aperture: Double, shutterSeconds: Double): Double {
@@ -829,10 +845,14 @@ class MainActivity : AppCompatActivity() {
     ) : LinearLayout(context) {
         private val swipeThreshold = dp(28).toFloat()
         private var selectedIndex = initialIndex
+        private var lastSwipeDirection = 1
         private var downX = 0f
         private var downY = 0f
         private var activeTouch = false
-        private val valueText: TextView
+        private var transitionAnimator: AnimatorSet? = null
+        private lateinit var dialArtworkView: DialArtworkView
+        private lateinit var currentValueText: TextView
+        private lateinit var incomingValueText: TextView
 
         init {
             orientation = VERTICAL
@@ -848,10 +868,13 @@ class MainActivity : AppCompatActivity() {
 
             val dialFrame = FrameLayout(context).apply {
                 layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                clipChildren = true
+                clipToPadding = true
             }
-            dialFrame.addView(DialArtworkView(context))
+            dialArtworkView = DialArtworkView(context)
+            dialFrame.addView(dialArtworkView)
 
-            valueText = label(labels[selectedIndex], 28f, "#F5F1E8", bold = true).apply {
+            currentValueText = label(labels[selectedIndex], 28f, "#F5F1E8", bold = true).apply {
                 gravity = Gravity.CENTER
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -859,7 +882,18 @@ class MainActivity : AppCompatActivity() {
                     Gravity.CENTER
                 )
             }
-            dialFrame.addView(valueText)
+            incomingValueText = label("", 28f, "#F5F1E8", bold = true).apply {
+                gravity = Gravity.CENTER
+                alpha = 0f
+                visibility = View.INVISIBLE
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            }
+            dialFrame.addView(currentValueText)
+            dialFrame.addView(incomingValueText)
 
             addView(dialFrame)
             addView(space(6))
@@ -880,8 +914,8 @@ class MainActivity : AppCompatActivity() {
                         val dy = event.y - downY
                         v.parentDisallowInterceptTouchEvent(false)
                         if (activeTouch && abs(dy) > swipeThreshold && abs(dy) > abs(dx)) {
-                            val direction = if (dy < 0f) 1 else -1
-                            updateIndex(selectedIndex + direction)
+                            lastSwipeDirection = if (dy < 0f) 1 else -1
+                            updateIndex(selectedIndex + lastSwipeDirection, lastSwipeDirection)
                         }
                         activeTouch = false
                         true
@@ -898,12 +932,60 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        private fun updateIndex(newIndex: Int) {
+        private fun updateIndex(newIndex: Int, direction: Int) {
             val clamped = newIndex.coerceIn(0, labels.lastIndex)
             if (clamped == selectedIndex) return
             selectedIndex = clamped
-            valueText.text = labels[selectedIndex]
+            animateValueChange(labels[selectedIndex], direction)
             onIndexChanged(selectedIndex)
+        }
+
+        private fun animateValueChange(nextLabel: String, direction: Int) {
+            val travel = max(dp(28).toFloat(), height * 0.24f)
+            transitionAnimator?.cancel()
+            incomingValueText.animate().cancel()
+            currentValueText.animate().cancel()
+
+            currentValueText.visibility = View.VISIBLE
+            incomingValueText.text = nextLabel
+            incomingValueText.visibility = View.VISIBLE
+
+            currentValueText.translationY = 0f
+            currentValueText.alpha = 1f
+            incomingValueText.translationY = if (direction > 0) travel else -travel
+            incomingValueText.alpha = 0f
+
+            val outgoingTarget = if (direction > 0) -travel else travel
+            transitionAnimator = AnimatorSet().apply {
+                playTogether(
+                    ObjectAnimator.ofFloat(currentValueText, View.TRANSLATION_Y, 0f, outgoingTarget),
+                    ObjectAnimator.ofFloat(currentValueText, View.ALPHA, 1f, 0f),
+                    ObjectAnimator.ofFloat(incomingValueText, View.TRANSLATION_Y, incomingValueText.translationY, 0f),
+                    ObjectAnimator.ofFloat(incomingValueText, View.ALPHA, 0f, 1f)
+                )
+                duration = 180L
+                interpolator = DecelerateInterpolator()
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        currentValueText.text = nextLabel
+                        currentValueText.translationY = 0f
+                        currentValueText.alpha = 1f
+                        incomingValueText.visibility = View.INVISIBLE
+                        incomingValueText.translationY = 0f
+                        incomingValueText.alpha = 0f
+                    }
+
+                    override fun onAnimationCancel(animation: Animator) {
+                        currentValueText.text = nextLabel
+                        currentValueText.translationY = 0f
+                        currentValueText.alpha = 1f
+                        incomingValueText.visibility = View.INVISIBLE
+                        incomingValueText.translationY = 0f
+                        incomingValueText.alpha = 0f
+                    }
+                })
+                start()
+            }
         }
 
         private fun View.parentDisallowInterceptTouchEvent(disallow: Boolean) {
