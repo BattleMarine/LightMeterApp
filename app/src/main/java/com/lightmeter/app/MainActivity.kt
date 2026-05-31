@@ -39,6 +39,7 @@ import androidx.core.content.ContextCompat
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -84,7 +85,10 @@ class MainActivity : AppCompatActivity() {
     private var exposureTimeRange: Range<Long>? = null
     private var sensitivityRange: Range<Int>? = null
     private var minimumFocusDistance: Float? = null
-    private var latestCameraEv100: Double? = null
+    private var latestPhysicalAperture: Double? = null
+    private var latestPhysicalShutterSeconds: Double? = null
+    private var latestPhysicalIso: Int? = null
+    private var previewResidualEv: Double = 0.0
     private var latestCaptureSummary = "Awaiting camera preview"
 
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -198,12 +202,12 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(color("#252B35"))
             layoutParams = LinearLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
             )
 
             targetMetricValue = metric("Scene", "16.0 EV")
-            currentMetricValue = metric("Setting", "15.0 EV")
-            offsetMetricValue = metric("Delta", "0.0 EV")
+            currentMetricValue = metric("Physical", "16.0 EV")
+            offsetMetricValue = metric("Virtual", "16.0 EV")
 
             addView(targetMetricValue)
             addView(currentMetricValue)
@@ -271,8 +275,6 @@ class MainActivity : AppCompatActivity() {
             addView(sectionHeader("Controls", "Swipe each dial up or down"))
             addView(space(10))
             addView(controlCardsRow())
-            addView(space(10))
-            addView(footerHint())
         }
     }
 
@@ -339,29 +341,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onControlChanged() {
-        refreshExposureReadouts()
         applyRequestedCameraState()
+        refreshExposureReadouts()
     }
 
     private fun refreshExposureReadouts() {
-        val aperture = apertureValues[apertureIndex]
-        val shutterSeconds = shutterValues[shutterIndex]
-        val iso = isoValues[isoIndex]
+        val snapshot = buildExposureSnapshot()
 
-        val settingEv100 = calculateSettingEv100(aperture, shutterSeconds)
-        val requiredEv100 = sceneEv100 + isoAdjustmentEv100(iso)
-        val appliedCameraEv100 = latestCameraEv100 ?: settingEv100
-        val delta = appliedCameraEv100 - requiredEv100
-
-        liveEvValueText.text = "Applied EV100 ${formatEv(appliedCameraEv100)}"
-        liveOffsetText.text = exposureStateText(delta)
+        liveEvValueText.text = "Physical EV100 ${formatEv(snapshot.physicalBrightnessEv100)}"
+        liveOffsetText.text = "Virtual EV100 ${formatEv(snapshot.virtualBrightnessEv100)} | Preview ${formatMultiplier(snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100)}"
         liveReadoutText.text = latestCaptureSummary
 
         targetMetricValue.text = metricValue("Scene\n${formatEv(sceneEv100)}")
-        currentMetricValue.text = metricValue("Setting\n${formatEv(settingEv100)}")
-        offsetMetricValue.text = metricValue("Delta\n${formatSignedEv(delta)}")
+        currentMetricValue.text = metricValue("Physical\n${formatEv(snapshot.physicalBrightnessEv100)}")
+        offsetMetricValue.text = metricValue("Virtual\n${formatEv(snapshot.virtualBrightnessEv100)}")
 
-        updateSimulationTint(delta)
+        updateSimulationTint(previewResidualEv)
     }
 
     private fun startCameraProvider() {
@@ -460,54 +455,106 @@ class MainActivity : AppCompatActivity() {
     private fun applyRequestedCameraState() {
         val camera = activeCamera ?: return
 
-        val requestedAperture = apertureValues[apertureIndex]
-        val requestedShutterSeconds = shutterValues[shutterIndex]
-        val requestedIso = isoValues[isoIndex]
-
-        val exposureSeconds = requestedShutterSeconds
-        val exposureNanos = (exposureSeconds * 1_000_000_000.0).roundToLong()
-
-        val optionsBuilder = CaptureRequestOptions.Builder()
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-            .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
-
-        val chosenAperture = chooseApertureForDevice(requestedAperture)
-        if (chosenAperture != null) {
-            optionsBuilder.setCaptureRequestOption(CaptureRequest.LENS_APERTURE, chosenAperture)
-        }
+        val targetSnapshot = buildExposureSnapshot()
+        val currentPhysical = currentPhysicalState()
+        var residualEv = targetSnapshot.virtualBrightnessEv100 - targetSnapshot.physicalBrightnessEv100
 
         if (supportsManualSensor) {
+            val isoTarget = chooseIsoForResidual(currentPhysical.iso, residualEv)
+            val brightnessAfterIso = brightnessForPhysical(currentPhysical.aperture, currentPhysical.shutterSeconds, isoTarget)
+            residualEv = targetSnapshot.virtualBrightnessEv100 - brightnessAfterIso
+
+            val shutterTarget = chooseShutterForResidual(currentPhysical.shutterSeconds, residualEv)
+            val brightnessAfterShutter = brightnessForPhysical(currentPhysical.aperture, shutterTarget, isoTarget)
+            residualEv = targetSnapshot.virtualBrightnessEv100 - brightnessAfterShutter
+
+            val exposureNanos = (shutterTarget * 1_000_000_000.0).roundToLong()
             val finalExposureNanos = exposureTimeRange?.let {
                 exposureNanos.coerceIn(it.lower, it.upper)
             } ?: exposureNanos
             val finalIso = sensitivityRange?.let {
-                requestedIso.coerceIn(it.lower, it.upper)
-            } ?: requestedIso
+                isoTarget.coerceIn(it.lower, it.upper)
+            } ?: isoTarget
 
-            optionsBuilder
+            val optionsBuilder = CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, finalExposureNanos)
                 .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, finalIso)
+
+            chooseApertureForDevice(currentPhysical.aperture)?.let { chosenAperture ->
+                optionsBuilder.setCaptureRequestOption(CaptureRequest.LENS_APERTURE, chosenAperture)
+            }
 
             Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(
                 optionsBuilder.build()
             )
             updateCameraStatus(buildCameraStatus())
         } else {
-            val desiredExposureDelta = (sceneEv100 + isoAdjustmentEv100(requestedIso)) - calculateSettingEv100(
-                requestedAperture,
-                requestedShutterSeconds
-            )
             val exposureState = camera.cameraInfo.exposureState
             val step = exposureState.exposureCompensationStep.toFloat().takeIf { it > 0f } ?: 1f
-            val compensationIndex = (desiredExposureDelta / step).roundToInt().coerceIn(
+            val compensationIndex = (residualEv / step).roundToInt().coerceIn(
                 exposureState.exposureCompensationRange.lower,
                 exposureState.exposureCompensationRange.upper
             )
             camera.cameraControl.setExposureCompensationIndex(compensationIndex)
             updateCameraStatus("Preview only - simulating exposure")
         }
+
+        previewResidualEv = residualEv
+        updateSimulationTint(previewResidualEv)
+    }
+
+    private fun currentPhysicalState(): PhysicalState {
+        val requestedAperture = apertureValues[apertureIndex]
+        val currentAperture = latestPhysicalAperture
+            ?: availableApertures.firstOrNull()?.toDouble()
+            ?: requestedAperture
+        val currentShutter = latestPhysicalShutterSeconds ?: shutterValues[shutterIndex]
+        val currentIso = latestPhysicalIso ?: isoValues[isoIndex]
+        return PhysicalState(
+            aperture = currentAperture,
+            shutterSeconds = currentShutter,
+            iso = currentIso
+        )
+    }
+
+    private fun brightnessForPhysical(aperture: Double, shutterSeconds: Double, iso: Int): Double {
+        val settingEv100 = calculateSettingEv100(aperture, shutterSeconds)
+        val requiredEv100 = sceneEv100 + isoAdjustmentEv100(iso)
+        val offsetEv = settingEv100 - requiredEv100
+        return sceneEv100 - offsetEv
+    }
+
+    private fun chooseIsoForResidual(currentIso: Int, residualEv: Double): Int {
+        val targetIso = currentIso * 2.0.pow(residualEv)
+        return pickNearestSupportedIso(targetIso)
+    }
+
+    private fun chooseShutterForResidual(currentShutterSeconds: Double, residualEv: Double): Double {
+        val targetShutterSeconds = currentShutterSeconds * 2.0.pow(residualEv)
+        return pickNearestSupportedShutter(targetShutterSeconds)
+    }
+
+    private fun pickNearestSupportedIso(targetIso: Double): Int {
+        val supportedIsoValues = isoValues.filter { iso ->
+            sensitivityRange?.let { iso in it.lower..it.upper } ?: true
+        }.ifEmpty { isoValues }
+
+        return supportedIsoValues.minByOrNull { abs(it - targetIso) } ?: isoValues[0]
+    }
+
+    private fun pickNearestSupportedShutter(targetSeconds: Double): Double {
+        val supportedShutters = shutterValues.filter { seconds ->
+            exposureTimeRange?.let {
+                val nanos = (seconds * 1_000_000_000.0).roundToLong()
+                nanos in it.lower..it.upper
+            } ?: true
+        }.ifEmpty { shutterValues }
+
+        return supportedShutters.minByOrNull { abs(it - targetSeconds) } ?: shutterValues[0]
     }
 
     private fun chooseApertureForDevice(requestedAperture: Double): Float? {
@@ -533,13 +580,39 @@ class MainActivity : AppCompatActivity() {
 
         val exposureSeconds = exposureTimeNanos?.toDouble()?.div(1_000_000_000.0)
         if (exposureSeconds != null && aperture != null) {
-            latestCameraEv100 = calculateSettingEv100(aperture.toDouble(), exposureSeconds)
+            latestPhysicalAperture = aperture.toDouble()
+            latestPhysicalShutterSeconds = exposureSeconds
+            latestPhysicalIso = sensitivity
         }
 
         latestCaptureSummary = buildCaptureSummary(result, exposureSeconds, sensitivity, aperture)
+        val snapshot = buildExposureSnapshot()
+        previewResidualEv = snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100
         runOnUiThread {
             refreshExposureReadouts()
         }
+    }
+
+    private fun buildExposureSnapshot(): ExposureSnapshot {
+        val requestedAperture = apertureValues[apertureIndex]
+        val requestedShutterSeconds = shutterValues[shutterIndex]
+        val requestedIso = isoValues[isoIndex]
+        val currentPhysical = currentPhysicalState()
+
+        val physicalSettingEv100 = calculateSettingEv100(currentPhysical.aperture, currentPhysical.shutterSeconds)
+        val physicalRequiredEv100 = sceneEv100 + isoAdjustmentEv100(currentPhysical.iso)
+        val physicalOffsetEv = physicalSettingEv100 - physicalRequiredEv100
+        val physicalBrightnessEv100 = sceneEv100 - physicalOffsetEv
+
+        val virtualSettingEv100 = calculateSettingEv100(requestedAperture, requestedShutterSeconds)
+        val virtualRequiredEv100 = sceneEv100 + isoAdjustmentEv100(requestedIso)
+        val virtualOffsetEv = virtualSettingEv100 - virtualRequiredEv100
+        val virtualBrightnessEv100 = sceneEv100 - virtualOffsetEv
+
+        return ExposureSnapshot(
+            physicalBrightnessEv100 = physicalBrightnessEv100,
+            virtualBrightnessEv100 = virtualBrightnessEv100
+        )
     }
 
     private fun buildCaptureSummary(
@@ -593,7 +666,7 @@ class MainActivity : AppCompatActivity() {
             return "Camera metadata unavailable"
         }
 
-        return parts.joinToString(" · ")
+        return parts.joinToString(" | ")
     }
 
     private fun buildCameraMetadataSummary(): String {
@@ -610,9 +683,9 @@ class MainActivity : AppCompatActivity() {
             else -> "focus distance available"
         }
         return if (supportsManualSensor) {
-            "CameraX preview active · manual sensor · $focusText"
+            "CameraX preview active | manual sensor | $focusText"
         } else {
-            "CameraX preview active · auto exposure · $focusText"
+            "CameraX preview active | auto exposure | $focusText"
         }
     }
 
@@ -628,18 +701,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (supportsManualSensor) {
-            simulationTintView.alpha = 0f
-            return
-        }
-
-        val intensity = min(0.55f, (abs(deltaEv) / 4.0).toFloat() * 0.55f)
+        val intensity = min(0.75f, (abs(deltaEv) / 4.0).toFloat())
         if (intensity <= 0f) {
             simulationTintView.alpha = 0f
             return
         }
 
-        simulationTintView.setBackgroundColor(if (deltaEv >= 0) Color.BLACK else Color.WHITE)
+        simulationTintView.setBackgroundColor(if (deltaEv >= 0) Color.WHITE else Color.BLACK)
         simulationTintView.alpha = intensity
     }
 
@@ -681,23 +749,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun metricValue(value: String): String = value
 
-    private fun footerHint(): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            setBackgroundColor(color("#252B35"))
-
-            addView(label("Fixed preset controls", 13f, "#AEB6C3", bold = true))
-            addView(space(4))
-            addView(
-                label(
-                    "The three cards stay fixed in the frame and snap between presets only. The live view uses CameraX preview. If the device supports manual sensor control, the app sends actual Camera2 requests for aperture, shutter, ISO, and infinity-focus best effort. If not, the preview remains live and a simple exposure tint simulates the chosen setting.",
-                    12f,
-                    "#7F8997"
-                )
-            )
+    private fun formatMultiplier(deltaEv: Double): String {
+        return if (abs(deltaEv) < 0.05) {
+            "x1.0"
+        } else {
+            "x${formatEv(2.0.pow(deltaEv))}"
         }
     }
+
+    private data class ExposureSnapshot(
+        val physicalBrightnessEv100: Double,
+        val virtualBrightnessEv100: Double
+    )
+
+    private data class PhysicalState(
+        val aperture: Double,
+        val shutterSeconds: Double,
+        val iso: Int
+    )
 
     private fun sectionHeader(title: String, subtitle: String): View {
         return LinearLayout(this).apply {
@@ -811,10 +880,8 @@ class MainActivity : AppCompatActivity() {
                         val dy = event.y - downY
                         v.parentDisallowInterceptTouchEvent(false)
                         if (activeTouch && abs(dy) > swipeThreshold && abs(dy) > abs(dx)) {
-                            val steps = (-dy / swipeThreshold).roundToInt()
-                            if (steps != 0) {
-                                updateIndex(selectedIndex + steps)
-                            }
+                            val direction = if (dy < 0f) 1 else -1
+                            updateIndex(selectedIndex + direction)
                         }
                         activeTouch = false
                         true
