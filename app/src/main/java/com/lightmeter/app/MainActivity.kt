@@ -131,22 +131,15 @@ class MainActivity : AppCompatActivity() {
         isoValues = listOf(25, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600)
     )
 
-    private var activeDialPresetSet = oneStopPreset
+    private var activeDialPresetSet = thirdStopPreset
 
-    private var apertureIndex = 4
-    private var shutterIndex = 10
-    private var isoIndex = 2
-    private var adjustmentStepLabel = "1stop"
+    private var apertureIndex = 6
+    private var shutterIndex = 15
+    private var isoIndex = 6
+    private var adjustmentStepLabel = "1/3stop"
 
     private lateinit var previewView: PreviewView
     private lateinit var simulationTintView: View
-    private lateinit var liveStatusText: TextView
-    private lateinit var liveEvValueText: TextView
-    private lateinit var liveOffsetText: TextView
-    private lateinit var liveReadoutText: TextView
-    private lateinit var targetMetricValue: TextView
-    private lateinit var currentMetricValue: TextView
-    private lateinit var offsetMetricValue: TextView
     private lateinit var apertureDialCard: DialValueCard
     private lateinit var shutterDialCard: DialValueCard
     private lateinit var isoDialCard: DialValueCard
@@ -266,80 +259,7 @@ class MainActivity : AppCompatActivity() {
 
             previewFrame.addView(previewView)
             previewFrame.addView(simulationTintView)
-            if (BuildConfig.DEBUG) {
-                previewFrame.addView(liveOverlay())
-            }
             addView(previewFrame)
-            if (BuildConfig.DEBUG) {
-                addView(space(10))
-                addView(evStrip())
-            }
-        }
-    }
-
-    private fun evStrip(): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            setBackgroundColor(color("#252B35"))
-            layoutParams = LinearLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            )
-
-            targetMetricValue = metric("Scene", "16.0 EV")
-            currentMetricValue = metric("Physical", "16.0 EV")
-            offsetMetricValue = metric("Virtual", "16.0 EV")
-
-            addView(targetMetricValue)
-            addView(currentMetricValue)
-            addView(offsetMetricValue)
-        }
-    }
-
-    private fun liveOverlay(): View {
-        return FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-
-            val topStatus = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(label("Live View", 13f, "#D6A84F", bold = true))
-                addView(space(4))
-                liveStatusText = label("Waiting for camera", 12f, "#AEB6C3")
-                addView(liveStatusText)
-            }
-            addView(
-                topStatus,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP or Gravity.START
-                )
-            )
-
-            val centerStack = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                liveEvValueText = label("Applied EV100 16.0", 40f, "#D6A84F", bold = true).centered()
-                liveOffsetText = label("On target", 13f, "#F5F1E8").centered()
-                liveReadoutText = label("Preview only", 12f, "#AEB6C3").centered()
-                addView(liveEvValueText)
-                addView(space(6))
-                addView(liveOffsetText)
-                addView(space(6))
-                addView(liveReadoutText)
-            }
-            addView(
-                centerStack,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-            )
         }
     }
 
@@ -512,17 +432,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshExposureReadouts() {
-        val snapshot = buildExposureSnapshot()
-
-        if (BuildConfig.DEBUG) {
-            liveEvValueText.text = "Physical EV100 ${formatEv(snapshot.physicalBrightnessEv100)}"
-            liveOffsetText.text = "Virtual EV100 ${formatEv(snapshot.virtualBrightnessEv100)} | Preview ${formatMultiplier(snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100)}"
-            liveReadoutText.text = latestCaptureSummary
-
-            targetMetricValue.text = metricValue("Scene\n${formatEv(sceneEv100)}")
-            currentMetricValue.text = metricValue("Physical\n${formatEv(snapshot.physicalBrightnessEv100)}")
-            offsetMetricValue.text = metricValue("Virtual\n${formatEv(snapshot.virtualBrightnessEv100)}")
-        }
+        buildExposureSnapshot()
     }
 
     private fun startCameraProvider() {
@@ -1013,10 +923,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateCameraStatus(message: String) {
-        if (!::liveStatusText.isInitialized) {
-            return
-        }
-        liveStatusText.text = message
+        return
     }
 
     private fun updateSimulationTint(deltaEv: Double) {
@@ -1075,16 +982,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun formatAperture(value: Double): String = String.format("%.1f", value)
-
-    private fun metricValue(value: String): String = value
-
-    private fun formatMultiplier(deltaEv: Double): String {
-        return if (abs(deltaEv) < 0.05) {
-            "x1.0"
-        } else {
-            "x${formatEv(2.0.pow(deltaEv))}"
-        }
-    }
 
     private data class ExposureSnapshot(
         val physicalBrightnessEv100: Double,
