@@ -266,10 +266,14 @@ class MainActivity : AppCompatActivity() {
 
             previewFrame.addView(previewView)
             previewFrame.addView(simulationTintView)
-            previewFrame.addView(liveOverlay())
+            if (BuildConfig.DEBUG) {
+                previewFrame.addView(liveOverlay())
+            }
             addView(previewFrame)
-            addView(space(10))
-            addView(evStrip())
+            if (BuildConfig.DEBUG) {
+                addView(space(10))
+                addView(evStrip())
+            }
         }
     }
 
@@ -510,13 +514,15 @@ class MainActivity : AppCompatActivity() {
     private fun refreshExposureReadouts() {
         val snapshot = buildExposureSnapshot()
 
-        liveEvValueText.text = "Physical EV100 ${formatEv(snapshot.physicalBrightnessEv100)}"
-        liveOffsetText.text = "Virtual EV100 ${formatEv(snapshot.virtualBrightnessEv100)} | Preview ${formatMultiplier(snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100)}"
-        liveReadoutText.text = latestCaptureSummary
+        if (BuildConfig.DEBUG) {
+            liveEvValueText.text = "Physical EV100 ${formatEv(snapshot.physicalBrightnessEv100)}"
+            liveOffsetText.text = "Virtual EV100 ${formatEv(snapshot.virtualBrightnessEv100)} | Preview ${formatMultiplier(snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100)}"
+            liveReadoutText.text = latestCaptureSummary
 
-        targetMetricValue.text = metricValue("Scene\n${formatEv(sceneEv100)}")
-        currentMetricValue.text = metricValue("Physical\n${formatEv(snapshot.physicalBrightnessEv100)}")
-        offsetMetricValue.text = metricValue("Virtual\n${formatEv(snapshot.virtualBrightnessEv100)}")
+            targetMetricValue.text = metricValue("Scene\n${formatEv(sceneEv100)}")
+            currentMetricValue.text = metricValue("Physical\n${formatEv(snapshot.physicalBrightnessEv100)}")
+            offsetMetricValue.text = metricValue("Virtual\n${formatEv(snapshot.virtualBrightnessEv100)}")
+        }
     }
 
     private fun startCameraProvider() {
@@ -729,105 +735,84 @@ class MainActivity : AppCompatActivity() {
         val supportedShutters = activeDialPresetSet.shutterValues
         val supportedIsos = activeDialPresetSet.isoValues
 
-        val preferredShutter = pickNearestSupportedShutter(
+        var shutterSeconds = pickNearestSupportedShutter(
             targetSeconds = requestedShutterSeconds,
             candidates = supportedShutters
         )
-        val preferredIso = requiredIsoForTargetExposure(
-            physicalAperture = physicalAperture,
-            shutterSeconds = preferredShutter,
-            targetExposureFactor = targetExposureFactor
+        var iso = pickNearestSupportedIso(
+            requiredIsoForTargetExposure(
+                physicalAperture = physicalAperture,
+                shutterSeconds = shutterSeconds,
+                targetExposureFactor = targetExposureFactor
+            ),
+            supportedIsos
         )
 
-        if (preferredIso in supportedIsos.first().toDouble()..supportedIsos.last().toDouble()) {
-            val chosenIso = pickNearestSupportedIso(preferredIso, supportedIsos)
-            return PhysicalExposureTarget(
-                aperture = physicalAperture,
-                shutterSeconds = preferredShutter,
-                iso = chosenIso,
-                residualEv = targetExposureFactor - exposureFactorForSetting(
-                    physicalAperture,
-                    preferredShutter,
-                    chosenIso
-                )
-            )
-        }
-
-        val shutterKeepingCandidates = supportedShutters.mapNotNull { shutterSeconds ->
+        repeat(5) {
             val requiredIso = requiredIsoForTargetExposure(
                 physicalAperture = physicalAperture,
                 shutterSeconds = shutterSeconds,
                 targetExposureFactor = targetExposureFactor
             )
             if (requiredIso in supportedIsos.first().toDouble()..supportedIsos.last().toDouble()) {
-                val chosenIso = pickNearestSupportedIso(requiredIso, supportedIsos)
-                val residualEv = targetExposureFactor - exposureFactorForSetting(
-                    physicalAperture,
-                    shutterSeconds,
-                    chosenIso
-                )
-                ExposureCandidate(
+                iso = pickNearestSupportedIso(requiredIso, supportedIsos)
+                return PhysicalExposureTarget(
+                    aperture = physicalAperture,
                     shutterSeconds = shutterSeconds,
-                    iso = chosenIso,
-                    residualEv = residualEv,
-                    shutterDistance = abs(log2(shutterSeconds / requestedShutterSeconds)),
-                    isoDistance = abs(log2(chosenIso / requestedIso.toDouble()))
+                    iso = iso,
+                    residualEv = targetExposureFactor - exposureFactorForSetting(
+                        physicalAperture,
+                        shutterSeconds,
+                        iso
+                    )
                 )
-            } else {
-                null
             }
-        }
 
-        val bestShutterKeepingCandidate = shutterKeepingCandidates.minWithOrNull(
-            compareBy<ExposureCandidate> { abs(it.residualEv) }
-                .thenBy { it.shutterDistance }
-                .thenBy { it.isoDistance }
-        )
-        if (bestShutterKeepingCandidate != null) {
-            return PhysicalExposureTarget(
-                aperture = physicalAperture,
-                shutterSeconds = bestShutterKeepingCandidate.shutterSeconds,
-                iso = bestShutterKeepingCandidate.iso,
-                residualEv = bestShutterKeepingCandidate.residualEv
+            val direction = if (requiredIso > supportedIsos.last()) {
+                ShutterDirection.SLOWER
+            } else {
+                ShutterDirection.FASTER
+            }
+            iso = if (direction == ShutterDirection.SLOWER) {
+                supportedIsos.last()
+            } else {
+                supportedIsos.first()
+            }
+
+            val residualEv = targetExposureFactor - exposureFactorForSetting(
+                physicalAperture,
+                shutterSeconds,
+                iso
+            )
+            val movedShutter = chooseShutterForResidual(shutterSeconds, residualEv)
+            shutterSeconds = pickShutterInDirection(
+                candidate = movedShutter,
+                reference = shutterSeconds,
+                direction = direction,
+                candidates = supportedShutters
             )
         }
 
-        val fallbackCandidate = supportedShutters.flatMap { shutterSeconds ->
-            supportedIsos.map { iso ->
-                val residualEv = targetExposureFactor - exposureFactorForSetting(
-                    physicalAperture,
-                    shutterSeconds,
-                    iso
-                )
-                ExposureCandidate(
-                    shutterSeconds = shutterSeconds,
-                    iso = iso,
-                    residualEv = residualEv,
-                    shutterDistance = abs(log2(shutterSeconds / requestedShutterSeconds)),
-                    isoDistance = abs(log2(iso / requestedIso.toDouble()))
-                )
-            }
-        }.minWithOrNull(
-            compareBy<ExposureCandidate> { abs(it.residualEv) }
-                .thenBy { it.shutterDistance }
-                .thenBy { it.isoDistance }
-        ) ?: ExposureCandidate(
-            shutterSeconds = preferredShutter,
-            iso = pickNearestSupportedIso(preferredIso, supportedIsos),
-            residualEv = targetExposureFactor - exposureFactorForSetting(
-                physicalAperture,
-                preferredShutter,
-                pickNearestSupportedIso(preferredIso, supportedIsos)
-            ),
-            shutterDistance = 0.0,
-            isoDistance = 0.0
+        val finalRequiredIso = requiredIsoForTargetExposure(
+            physicalAperture = physicalAperture,
+            shutterSeconds = shutterSeconds,
+            targetExposureFactor = targetExposureFactor
         )
+        iso = when {
+            finalRequiredIso > supportedIsos.last() -> supportedIsos.last()
+            finalRequiredIso < supportedIsos.first() -> supportedIsos.first()
+            else -> pickNearestSupportedIso(finalRequiredIso, supportedIsos)
+        }
 
         return PhysicalExposureTarget(
             aperture = physicalAperture,
-            shutterSeconds = fallbackCandidate.shutterSeconds,
-            iso = fallbackCandidate.iso,
-            residualEv = fallbackCandidate.residualEv
+            shutterSeconds = shutterSeconds,
+            iso = iso,
+            residualEv = targetExposureFactor - exposureFactorForSetting(
+                physicalAperture,
+                shutterSeconds,
+                iso
+            )
         )
     }
 
@@ -852,14 +837,6 @@ class MainActivity : AppCompatActivity() {
         return candidates.minByOrNull { abs(it - targetSeconds) } ?: candidates.first()
     }
 
-    private data class ExposureCandidate(
-        val shutterSeconds: Double,
-        val iso: Int,
-        val residualEv: Double,
-        val shutterDistance: Double,
-        val isoDistance: Double
-    )
-
     private fun pickNearestSupportedIso(targetIso: Double): Int {
         val supportedIsoValues = activeDialPresetSet.isoValues.filter { iso ->
             sensitivityRange?.let { iso in it.lower..it.upper } ?: true
@@ -877,6 +854,29 @@ class MainActivity : AppCompatActivity() {
         }.ifEmpty { activeDialPresetSet.shutterValues }
 
         return supportedShutters.minByOrNull { abs(it - targetSeconds) } ?: activeDialPresetSet.shutterValues[0]
+    }
+
+    private fun pickShutterInDirection(
+        candidate: Double,
+        reference: Double,
+        direction: ShutterDirection,
+        candidates: List<Double>
+    ): Double {
+        val filtered = when (direction) {
+            ShutterDirection.SLOWER -> candidates.filter { it > reference }
+            ShutterDirection.FASTER -> candidates.filter { it < reference }
+        }
+
+        if (filtered.isEmpty()) {
+            return candidate
+        }
+
+        return filtered.minByOrNull { abs(it - candidate) } ?: candidate
+    }
+
+    private enum class ShutterDirection {
+        FASTER,
+        SLOWER
     }
 
     private fun chooseApertureForDevice(requestedAperture: Double): Float? {
