@@ -22,11 +22,13 @@ import android.hardware.camera2.TotalCaptureResult
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import android.util.Range
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ArrayAdapter
 import android.widget.LinearLayout
@@ -44,6 +46,9 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.WindowCompat
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.ln
@@ -176,6 +181,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER
+            }
+        }
+        enterFullscreenMode()
         setContentView(createContentView())
         refreshExposureReadouts()
 
@@ -189,9 +201,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        enterFullscreenMode()
         if (hasCameraPermission() && cameraProvider == null) {
             startCameraProvider()
         }
+    }
+
+    private fun enterFullscreenMode() {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
     private fun createContentView(): View {
@@ -270,14 +290,25 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(color("#1C2028"))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                0.95f
+                controlPanelHeightPx()
             )
 
             addView(controlHeader())
             addView(space(10))
             addView(controlCardsRow())
         }
+    }
+
+    private fun controlPanelHeightPx(): Int {
+        val screenHeightDp = resources.configuration.screenHeightDp
+        val targetDp = when {
+            screenHeightDp >= 840 -> 356
+            screenHeightDp >= 780 -> 344
+            screenHeightDp >= 720 -> 332
+            screenHeightDp >= 660 -> 316
+            else -> 300
+        }
+        return dp(targetDp)
     }
 
     private fun controlHeader(): View {
