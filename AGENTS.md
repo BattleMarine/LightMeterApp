@@ -60,6 +60,8 @@ Debug APK 결과물:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+배포용 release APK는 `local.properties`의 `release.storeFile`, `release.storePassword`, `release.keyAlias`, `release.keyPassword` 값을 사용해 서명한다. 이 값과 키스토어는 Git에 추가하지 않으며, 릴리즈 패키지 작업은 서명 정보가 없으면 실패해야 한다.
+
 ## 현재 기술 스택
 
 - Language: Kotlin

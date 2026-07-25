@@ -206,6 +206,25 @@ Debug APK 빌드:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### 배포용 릴리즈 APK 서명
+
+릴리즈 APK는 로컬 키스토어로 서명합니다. 키스토어와 비밀번호는 저장소에 넣지 않고, Git에서 제외된 `local.properties`에 아래 값을 둡니다.
+
+```properties
+release.storeFile=C:/Users/사용자/.android/lightmeter-release.keystore
+release.storePassword=키스토어_비밀번호
+release.keyAlias=lightmeter
+release.keyPassword=키_비밀번호
+```
+
+서명된 배포 APK는 다음 명령으로 만듭니다.
+
+```powershell
+.\gradlew.bat assembleRelease
+```
+
+서명 정보가 없으면 release 패키지 작업은 실패합니다. 키스토어와 비밀번호는 안전한 위치에 별도로 백업해야 합니다.
+
 Android Studio에서 열기:
 
 1. Android Studio에서 `C:\Users\ktsvc\Documents\LightMeterApp` 폴더를 엽니다.
