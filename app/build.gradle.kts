@@ -1,7 +1,26 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val releaseStoreFile = localProperties.getProperty("release.storeFile")
+val releaseStorePassword = localProperties.getProperty("release.storePassword")
+val releaseKeyAlias = localProperties.getProperty("release.keyAlias")
+val releaseKeyPassword = localProperties.getProperty("release.keyPassword")
+val isReleaseSigningConfigured = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.lightmeter.app"
@@ -22,6 +41,33 @@ android {
 
     buildFeatures {
         buildConfig = true
+    }
+
+    signingConfigs {
+        create("release") {
+            if (isReleaseSigningConfigured) {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            if (isReleaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+}
+
+tasks.matching { it.name == "packageRelease" }.configureEach {
+    doFirst {
+        check(isReleaseSigningConfigured) {
+            "Release signing is not configured. Set release.* values in local.properties."
+        }
     }
 }
 
