@@ -61,7 +61,7 @@ import kotlin.math.roundToLong
 class MainActivity : AppCompatActivity() {
     private val sceneEv100 = 16.0
     private val minimumManualShutterSeconds = 1.0 / 1_000_000.0
-    private val maximumManualShutterSeconds = 8.0
+    private val maximumPreviewShutterSeconds = 1.0 / 10.0
 
     private data class DialPresetSet(
         val apertureLabels: List<String>,
@@ -169,6 +169,7 @@ class MainActivity : AppCompatActivity() {
     private var latestPhysicalShutterSeconds: Double? = null
     private var latestPhysicalIso: Int? = null
     private var previewResidualEv: Double = 0.0
+    private var previewShutterLimitReached = false
     private val simulationTintHandler = Handler(Looper.getMainLooper())
     private var pendingSimulationTintEv: Double = 0.0
     private val applySimulationTintRunnable = Runnable {
@@ -671,6 +672,7 @@ class MainActivity : AppCompatActivity() {
                 requestedIso = requestedIso,
                 physicalAperture = physicalAperture
             )
+            previewShutterLimitReached = physicalTarget.shutterLimitedForPreview
             val physicalBrightnessAfterRequest = brightnessForPhysical(
                 physicalTarget.aperture,
                 physicalTarget.shutterSeconds,
@@ -747,27 +749,28 @@ class MainActivity : AppCompatActivity() {
         val isoRange = sensitivityRange
         val minimumIso = isoRange?.lower ?: activeDialPresetSet.isoValues.first()
         val maximumIso = isoRange?.upper ?: activeDialPresetSet.isoValues.last()
-        val requiredIsoAtRequestedShutter = requiredIsoForTargetExposure(
+        val previewShutterSeconds = clampShutterForPreview(requestedShutterSeconds)
+        val requiredIsoAtPreviewShutter = requiredIsoForTargetExposure(
             physicalAperture = physicalAperture,
-            shutterSeconds = requestedShutterSeconds,
+            shutterSeconds = previewShutterSeconds,
             targetExposureFactor = targetExposureFactor
         )
 
-        // Keep the user's shutter request when ISO can compensate for the fixed aperture.
-        // When ISO reaches a hardware limit, solve the necessary shutter directly instead of
-        // walking through UI ticks. This keeps the result independent of the selected stop mode.
-        val boundedIso = requiredIsoAtRequestedShutter
+        // The virtual exposure keeps the user's shutter selection. The physical preview is
+        // limited to 1/10s so a high virtual exposure never stalls the camera preview.
+        val boundedIso = requiredIsoAtPreviewShutter
             .roundToInt()
             .coerceIn(minimumIso, maximumIso)
-        val shutterSeconds = if (requiredIsoAtRequestedShutter in minimumIso.toDouble()..maximumIso.toDouble()) {
-            requestedShutterSeconds
+        val shutterBeforePreviewLimit = if (requiredIsoAtPreviewShutter in minimumIso.toDouble()..maximumIso.toDouble()) {
+            previewShutterSeconds
         } else {
             shutterForTargetExposure(
                 physicalAperture = physicalAperture,
                 targetExposureFactor = targetExposureFactor,
                 iso = boundedIso
-            ).let(::clampShutterToManualRange)
+            )
         }
+        val shutterSeconds = clampShutterForPreview(shutterBeforePreviewLimit)
 
         // A shutter limited by the sensor range can require a different ISO. Recalculate once
         // from the final shutter so the residual is only what the hardware truly cannot express.
@@ -781,6 +784,8 @@ class MainActivity : AppCompatActivity() {
             aperture = physicalAperture,
             shutterSeconds = shutterSeconds,
             iso = iso,
+            shutterLimitedForPreview = requestedShutterSeconds > maximumPreviewShutterSeconds ||
+                shutterBeforePreviewLimit > maximumPreviewShutterSeconds,
             residualEv = targetExposureFactor - exposureFactorForSetting(
                 physicalAperture,
                 shutterSeconds,
@@ -811,10 +816,11 @@ class MainActivity : AppCompatActivity() {
         return (physicalAperture * physicalAperture) / 2.0.pow(requiredSettingEv100)
     }
 
-    private fun clampShutterToManualRange(shutterSeconds: Double): Double {
-        // Camera metadata can under-report the range accepted by a device's preview pipeline.
-        // Keep it as diagnostic information and try the user's exposure direction first.
-        return shutterSeconds.coerceIn(minimumManualShutterSeconds, maximumManualShutterSeconds)
+    private fun clampShutterForPreview(shutterSeconds: Double): Double {
+        return shutterSeconds.coerceIn(
+            minimumManualShutterSeconds,
+            maximumPreviewShutterSeconds
+        )
     }
 
     private fun chooseApertureForDevice(requestedAperture: Double): Float? {
@@ -922,6 +928,9 @@ class MainActivity : AppCompatActivity() {
         if (exposureState != null) {
             parts += exposureState
         }
+        if (previewShutterLimitReached) {
+            parts += "Preview shutter capped at 1/10s"
+        }
 
         if (parts.isEmpty()) {
             return "Camera metadata unavailable"
@@ -962,7 +971,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val intensity = min(0.65f, (abs(deltaEv) / 4.5).toFloat())
+        val intensity = (1.0 - 2.0.pow(-abs(deltaEv))).toFloat()
         if (intensity <= 0f) {
             simulationTintView.animate().alpha(0f).setDuration(140L).start()
             return
@@ -1039,6 +1048,7 @@ class MainActivity : AppCompatActivity() {
         val aperture: Double,
         val shutterSeconds: Double,
         val iso: Int,
+        val shutterLimitedForPreview: Boolean,
         val residualEv: Double
     )
 
