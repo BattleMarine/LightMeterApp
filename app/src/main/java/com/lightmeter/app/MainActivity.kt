@@ -165,7 +165,9 @@ class MainActivity : AppCompatActivity() {
     private var previewShutterLimitReached = false
     private val simulationTintHandler = Handler(Looper.getMainLooper())
     private var pendingSimulationTintEv: Double = 0.0
+    private var isSimulationTintUpdateScheduled = false
     private val applySimulationTintRunnable = Runnable {
+        isSimulationTintUpdateScheduled = false
         updateSimulationTint(pendingSimulationTintEv)
     }
     private var latestCaptureSummary = "Awaiting camera preview"
@@ -879,19 +881,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         val intensity = (1.0 - 2.0.pow(-abs(deltaEv))).toFloat()
+        simulationTintView.animate().cancel()
         if (intensity <= 0f) {
-            simulationTintView.animate().alpha(0f).setDuration(140L).start()
+            simulationTintView.alpha = 0f
             return
         }
 
         simulationTintView.setBackgroundColor(if (deltaEv >= 0) Color.WHITE else Color.BLACK)
-        simulationTintView.animate().alpha(intensity).setDuration(140L).start()
+        simulationTintView.alpha = intensity
     }
 
     private fun scheduleSimulationTint(deltaEv: Double) {
         pendingSimulationTintEv = deltaEv
-        simulationTintHandler.removeCallbacks(applySimulationTintRunnable)
-        simulationTintHandler.postDelayed(applySimulationTintRunnable, 90L)
+        if (isSimulationTintUpdateScheduled) {
+            return
+        }
+        isSimulationTintUpdateScheduled = true
+        simulationTintHandler.post(applySimulationTintRunnable)
     }
 
     private fun calculateSettingEv100(aperture: Double, shutterSeconds: Double): Double {
