@@ -8,17 +8,17 @@
 
 ## 문서 기준과 버전
 
-2026-10-15에 원격에서 받은 `main`의 코드(`2a07ed8`) 기준입니다. 배포 이력과 개발 중 변경은 구분합니다.
+현재 개발 문서는 `main`의 `c9181fd` 기반에 추가한 Color/B/W 프리뷰 구현을 포함합니다. Color/B/W 기능은 아직 APK로 배포하지 않았으며, 배포 이력과 개발 변경은 구분합니다.
 
 | 항목 | 현재 상태 |
 | --- | --- |
 | `main` 앱 버전 | `versionName = 1.0.0`, `versionCode = 1000` |
-| 배포 버전 | 사용자 배포 이력 및 로컬 태그 기준 `v1.0.1` |
-| 배포 태그의 코드 | `release-1.0.0` 브랜치의 `a6cdda2`, 버전 `1.0.1` / `1001` |
+| 최신 배포 버전 | [GitHub Release `v1.0.2`](https://github.com/BattleMarine/LightMeterApp/releases/tag/v1.0.2) (APK 첨부) |
+| `v1.0.1` 태그의 코드 | `a6cdda2`, 버전 `1.0.1` / `1001` |
 | `main` 시작값 | `f/4.0`, `1/2000s`, `ISO 100`, `1stop` |
 | `v1.0.1` 시작값 | `f/2.0`, `1/60s`, `ISO 100`, `1/3stop` |
 
-현재 `main`에는 물리 노출 보정 경로 정리, 프리뷰 셔터 지연 제한, 빌드 도구 업데이트가 커밋되어 있습니다. 이 변경은 `v1.0.1`에 포함되어 있지 않습니다. 다음 배포 전에는 시작값과 버전 번호를 확인해야 합니다.
+현재 `main`에는 물리 노출 보정 경로 정리, 프리뷰 셔터 지연 제한, 빌드 도구 업데이트가 커밋되어 있습니다. `release-1.0.2`에는 별도로 프리뷰 보정 예약 수정과 release 서명 설정이 있으며, 이 두 변경은 현재 `main`에 포함되어 있지 않습니다. 다음 배포 전에는 시작값과 버전 번호를 확인해야 합니다.
 
 ## 현재 기능
 
@@ -31,6 +31,16 @@
 - 수동 제어 경로에서는 AF를 끄고 무한대 초점을 요청합니다. 모든 거리에 초점이 맞는 팬포커스를 보장하지 않으며, 별도 심도·배경 흐림 효과는 없습니다.
 - 수동 센서 제어 미지원 기기에서는 자동 노출을 유지하며 지원 범위 안의 노출 보정값을 요청하고, 메타데이터를 이용한 프리뷰 보정을 시도합니다.
 - 사진 촬영·저장 기능은 없으며, 프리뷰 용도로 사용합니다.
+
+### Color / B/W 프리뷰
+
+- 조작부 상단의 스위치로 실제 프리뷰 영상의 Color/B/W 표시를 전환합니다. 꺼짐은 `Color`, 켜짐은 `B/W`이며 처음 설치했을 때 기본값은 Color입니다.
+- 마지막 선택은 앱 전용 `SharedPreferences`에 저장하고, 재실행 및 Activity 재생성 시 프리뷰 생성 전에 복원합니다. 앱 데이터 삭제 시 기본값으로 돌아갑니다.
+- 스톱 선택과 모드 스위치는 조작부 제목 아래에 배치합니다. 화면 너비가 360dp 미만이거나 글꼴 배율이 1.3을 넘으면 두 옵션을 세로로 배치하고, 각 조작 영역의 높이는 최소 48dp로 둡니다.
+- 흑백은 채도 0의 `ColorMatrixColorFilter`를 영상 `PreviewView`의 하드웨어 레이어에 적용합니다. Color로 돌아오면 필터와 추가 레이어를 해제합니다. 프레임을 CPU로 읽거나 비트맵으로 복사하지 않으며, 전환 시 카메라 재바인딩이나 물리 노출 요청을 하지 않습니다.
+- `PreviewView.ImplementationMode.COMPATIBLE`을 유지합니다. [공식 PreviewView 문서](https://developer.android.com/reference/androidx/camera/view/PreviewView#setImplementationMode(androidx.camera.view.PreviewView.ImplementationMode))와 CameraX 1.4.2 소스의 `shouldUseTextureView()` 및 `TextureViewImplementation.initializePreview()`에서 이 모드가 `TextureView`를 자식으로 배치함을 확인했습니다. [TextureView](https://developer.android.com/reference/android/view/TextureView)는 별도 창 대신 일반 View 계층에 합성되며, [하드웨어 레이어의 Paint 필터](https://developer.android.com/topic/performance/views/hardware-accel-views#view-layers)로 흑백 효과를 줄 수 있습니다. 사용 API는 최소 SDK 26에서 지원됩니다. `SurfaceView`를 사용하는 PERFORMANCE 모드로 바꾸면 이 방식을 그대로 적용할 수 없습니다.
+- 필터 대상은 영상 View뿐입니다. 형제 View인 흰색·검정색 밝기 보정 오버레이와 개발 텍스트, 조작부는 그대로 합성합니다. 모드 전환은 조리개·셔터·ISO 카드 선택값, 물리 제어 및 메타데이터 계산에 영향을 주지 않습니다.
+- 특정 흑백 필름의 색 반응·입자·대비를 재현하지 않습니다. 하드웨어 합성 결과, 전환 시 연속 영상 갱신, 성능 및 작은 화면 배치는 실기기에서 확인해야 합니다.
 
 ### 조작부
 
@@ -104,7 +114,8 @@ debug 화면의 `Physical EV100`, `Virtual EV100`은 현재 다음 내부 계산
 ## 알려진 제약과 다음 작업 후보
 
 - 실제 기기에서 카메라 프리뷰와 셔터·ISO 반영은 확인된 이력이 있습니다. 고정 조리개와 ISO 약 3200 이상에서 반응이 제한된 사례는 특정 기기 관찰이며, 모든 기기의 공통 한계가 아닙니다.
-- 최신 원격 코드의 빌드 및 밝고 어두운 환경의 실기기 동작은 이번 문서 통합에서 검증하지 않았습니다. 이전 로컬 변경의 빌드 결과를 최신 코드의 검증 결과로 대신하지 않습니다.
+- 2026-10-17 Color/B/W 개발 변경에서 Gradle Wrapper의 `assembleDebug`로 debug APK 생성을 확인했습니다. 당시 에이전트의 검증 환경에는 연결된 기기·에뮬레이터가 없어 실제 영상의 흑백 전환, 재실행 복원, 밝고 어두운 환경의 보정 및 화면 배치는 검증하지 않았습니다.
+- 2026-10-19 사용자가 에뮬레이터에서 B/W 기능이 정상 동작함을 확인했다고 보고했습니다. 실기기는 디버거 연결 문제로 미검증이며, 에뮬레이터 결과를 실기기 검증 결과로 확대하지 않습니다.
 - 장면 EV 측광·캘리브레이션, 기기의 셔터 범위 처리, 오버레이 반영 시점, 1/2스톱 셔터 목록은 후속 검토 대상입니다.
 - AUTO, P/A/S/M 모드 선택, 자동 등가노출 유지, 카메라 선택, 스팟·중앙중점·멀티패턴 측광은 미구현입니다.
 - FPS 제한, 원형 다이얼, ND 필터 보정, 프로파일, 히스토그램, 촬영 로그는 확장 후보입니다. 현재 구현 범위에 포함하지 않습니다.
@@ -119,11 +130,11 @@ Kotlin과 Android View 기반의 단일 `app` 모듈입니다. UI, 프리셋, �
 | SDK | 최소 26, compile / target 35 |
 | Java / Kotlin JVM 타깃 | 17 |
 | CameraX | 1.4.2 |
-| Android Gradle Plugin / Kotlin 플러그인 | 9.3.1 / 2.2.10 |
-| Gradle Wrapper | 9.5.0 |
+| Android Gradle Plugin / Kotlin 플러그인 | 9.4.1 / 2.2.10 |
+| Gradle Wrapper | 9.6.0 |
 | Gradle 데몬 JVM 기준 | 21 (`gradle/gradle-daemon-jvm.properties`) |
 
-빌드 도구 버전은 최신 `main`에 커밋된 설정 기준입니다. 현재 조합을 이번 문서 통합에서 다시 빌드 검증하지는 않았습니다.
+빌드 도구 버전은 현재 작업 트리의 설정 기준입니다. AGP 9.4.1과 Gradle 9.6.0은 작업 중 외부에서 갱신된 미커밋 설정이며, `main`의 `c9181fd`는 AGP 9.3.1과 Gradle 9.5.0을 사용합니다. Color/B/W 변경과 빌드 도구 변경은 배포 이력과 구분합니다.
 
 ```text
 LightMeterApp/
@@ -158,6 +169,12 @@ Windows PowerShell에서 debug APK 빌드:
 ```
 
 결과: `app/build/outputs/apk/debug/app-debug.apk`
+
+2026-10-17 검증에서는 `assembleDebug "-Pkotlin.compiler.execution.strategy=in-process"`가 AGP 9.4.1·Gradle 9.6.0에서 성공했습니다. 기본 실행은 샌드박스의 SDK·Kotlin 데몬 파일 접근 제한으로 실패해, 필요한 파일 접근을 허용하고 Kotlin 컴파일을 같은 프로세스에서 실행했습니다. 저장소의 빌드 옵션은 이 우회를 위해 수정하지 않았습니다.
+
+같은 옵션의 `lintDebug`는 기존 Camera2 interop opt-in 오류 24건과 경고 39건을 보고하며 실패했습니다. `c9181fd` 소스를 `build/` 아래에 별도로 복사한 기준 검사(AGP 9.3.1·Gradle 9.5.0)에서도 같은 오류·경고 수가 나왔고, `MainActivity.kt` 진단 43건은 최종 검사와 소스 지문이 모두 일치했습니다. B/W 변경에서 추가된 lint 진단이나 무관한 코드 자동수정은 없습니다. 실기기 영상 검증을 통과했다는 의미는 아닙니다.
+
+2026-10-19에는 사용자가 에뮬레이터에서 B/W 기능을 테스트해 정상 동작을 확인했다고 보고했습니다. 에이전트가 직접 실행한 검증과 구분해 기록하며, 실기기는 디버거 연결 문제로 확인하지 못했습니다.
 
 현재 저장소에 자동 테스트 소스는 없습니다. 코드 변경 후 빌드와 함께 권한 허용·거부, 스와이프 한 단계 이동, 단계 전환, 물리 설정과 메타데이터, 밝고 어두운 환경의 보정, 전체화면 배치를 변경 범위에 맞게 확인합니다. 빌드 성공과 실기기 검증은 별도로 기록합니다.
 
