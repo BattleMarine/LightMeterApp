@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
@@ -36,6 +38,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -46,9 +49,11 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.ViewCompat
 import android.view.animation.DecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.ln
@@ -145,6 +150,14 @@ class MainActivity : AppCompatActivity() {
     private var isoIndex = 2
     private var adjustmentStepLabel = "1stop"
 
+    private val previewPreferences by lazy {
+        getSharedPreferences("preview_preferences", Context.MODE_PRIVATE)
+    }
+    private var isBlackAndWhitePreview = false
+    private val blackAndWhitePreviewPaint = Paint().apply {
+        colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
+    }
+
     private lateinit var previewView: PreviewView
     private lateinit var simulationTintView: View
     private lateinit var liveStatusText: TextView
@@ -198,6 +211,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         enterFullscreenMode()
+        isBlackAndWhitePreview = previewPreferences.getBoolean("black_and_white", false)
         setContentView(createContentView())
         refreshExposureReadouts()
 
@@ -270,6 +284,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             previewView = PreviewView(context).apply {
+                // COMPATIBLE keeps the video in the View hierarchy via TextureView,
+                // so the hardware layer's color filter also processes camera frames.
                 implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 scaleType = PreviewView.ScaleType.FILL_CENTER
                 layoutParams = FrameLayout.LayoutParams(
@@ -277,6 +293,7 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             }
+            applyPreviewColorMode()
 
             simulationTintView = View(context).apply {
                 layoutParams = FrameLayout.LayoutParams(
@@ -396,21 +413,62 @@ class MainActivity : AppCompatActivity() {
 
     private fun controlHeader(): View {
         return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
 
-            addView(
-                sectionHeader("Controls", "Swipe each dial up or down").apply {
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(sectionHeader("Controls", "Swipe each dial up or down"))
+            addView(space(4))
+            addView(LinearLayout(context).apply {
+                val stackOptions = resources.configuration.screenWidthDp < 360 ||
+                    resources.configuration.fontScale > 1.3f
+                orientation = if (stackOptions) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                for (option in listOf(stepModeSpinner(), previewColorModeSwitch())) {
+                    option.minimumHeight = dp(48)
+                    addView(option, LinearLayout.LayoutParams(
+                        if (stackOptions) LinearLayout.LayoutParams.MATCH_PARENT else 0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        if (stackOptions) 0f else 1f
+                    ))
                 }
-            )
-            addView(spaceHorizontal(10))
-            addView(stepModeSpinner())
+            })
         }
+    }
+
+    private fun previewColorModeSwitch(): View {
+        return SwitchCompat(this).apply {
+            isChecked = isBlackAndWhitePreview
+            text = if (isChecked) "B/W" else "Color"
+            textSize = 14f
+            setTextColor(color("#F5F1E8"))
+            switchPadding = dp(8)
+            showText = false
+            contentDescription = "Black and white preview"
+            ViewCompat.setStateDescription(this, text)
+            setOnCheckedChangeListener { _, checked ->
+                isBlackAndWhitePreview = checked
+                text = if (checked) "B/W" else "Color"
+                ViewCompat.setStateDescription(this, text)
+                applyPreviewColorMode()
+                previewPreferences.edit { putBoolean("black_and_white", checked) }
+            }
+        }
+    }
+
+    private fun applyPreviewColorMode() {
+        // Only PreviewView is filtered. Exposure tint and debug text are sibling views.
+        // No surface/provider or camera request changes are needed when toggling.
+        previewView.setLayerType(
+            if (isBlackAndWhitePreview) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE,
+            if (isBlackAndWhitePreview) blackAndWhitePreviewPaint else null
+        )
     }
 
     private fun stepModeSpinner(): View {
