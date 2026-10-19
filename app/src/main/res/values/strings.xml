@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">LightMeter</string>
+    <string name="auto_meter_label" translatable="false">AUTO</string>
+    <string name="priority_a_label" translatable="false">A</string>
+    <string name="priority_s_label" translatable="false">S</string>
+    <string name="priority_a_description">조리개 우선: 조리개와 필름 ISO 유지, 셔터 자동 선택</string>
+    <string name="priority_s_description">셔터 우선: 셔터와 필름 ISO 유지, 조리개 자동 선택</string>
 </resources>

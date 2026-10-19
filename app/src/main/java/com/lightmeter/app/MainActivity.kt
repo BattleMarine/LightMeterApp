@@ -39,10 +39,14 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
+import androidx.appcompat.widget.AppCompatButton
+import androidx.appcompat.widget.AppCompatRadioButton
+import android.widget.RadioGroup
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
@@ -63,6 +67,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
 class MainActivity : AppCompatActivity() {
     private val sceneEv100 = 16.0
     private val minimumManualShutterSeconds = 1.0 / 1_000_000.0
@@ -146,7 +151,7 @@ class MainActivity : AppCompatActivity() {
     private var activeDialPresetSet = oneStopPreset
 
     private var apertureIndex = 4
-    private var shutterIndex = 10
+    private var shutterIndex = 5
     private var isoIndex = 2
     private var adjustmentStepLabel = "1stop"
 
@@ -170,6 +175,40 @@ class MainActivity : AppCompatActivity() {
     private lateinit var apertureDialCard: DialValueCard
     private lateinit var shutterDialCard: DialValueCard
     private lateinit var isoDialCard: DialValueCard
+    private lateinit var exposureStatusText: TextView
+    private lateinit var autoMeterButton: AppCompatButton
+    private lateinit var priorityGroup: RadioGroup
+    private var exposurePriority = ExposurePriority.APERTURE
+    private var initialMeteringPriority = ExposurePriority.APERTURE
+    private var initialMeteringCards: MeteringCards? = null
+    private var initialSelection: ExposureSelection? = null
+    private var initialConverged = false
+
+    private var isResumedForCamera = false
+    private var cameraLoading = false
+    private var cameraGeneration = 0L
+    private var startupPending = true
+    private var plainAutoPreview = false
+    private var exposureNotice: String? = null
+    private val requestGate = ExposureRequestGate()
+    private var lastCaptureFrame = -1L
+    private val startupAeProbe = StartupAeProbe()
+    private var expectedRequest: ExpectedExposureRequest? = null
+    private var exposureTimeout: Runnable? = null
+    private var tintReady = false
+    private var tintScheduled = false
+    private var tintToken = 0L
+    private var previewConfirmed = false
+    private var lastRequestOptions: CaptureRequestOptions? = null
+    private val oneShotMetering = OneShotMetering()
+    private var previousPreview: PreviewSnapshot? = null
+
+    private data class PreviewSnapshot(
+        val options: CaptureRequestOptions,
+        val expected: ExpectedExposureRequest,
+        val phase: ExposureRequestGate.Phase,
+        val plainAuto: Boolean
+    )
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var activeCamera: Camera? = null
@@ -186,7 +225,10 @@ class MainActivity : AppCompatActivity() {
     private val simulationTintHandler = Handler(Looper.getMainLooper())
     private var pendingSimulationTintEv: Double = 0.0
     private val applySimulationTintRunnable = Runnable {
-        updateSimulationTint(pendingSimulationTintEv)
+        tintScheduled = false
+        if (tintReady && isResumedForCamera && tintToken == requestGate.token) {
+            updateSimulationTint(pendingSimulationTintEv)
+        }
     }
     private var latestCaptureSummary = "Awaiting camera preview"
 
@@ -194,8 +236,10 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            startCameraProvider()
+            if (isResumedForCamera) startCameraProvider()
         } else {
+            stopCameraSession()
+            showExposureStatus("카메라 권한이 필요합니다")
             latestCaptureSummary = "Camera permission denied"
             refreshExposureReadouts()
             updateCameraStatus("Camera permission denied")
@@ -212,12 +256,11 @@ class MainActivity : AppCompatActivity() {
         }
         enterFullscreenMode()
         isBlackAndWhitePreview = previewPreferences.getBoolean("black_and_white", false)
+        restoreFilmSettings(savedInstanceState)
         setContentView(createContentView())
         refreshExposureReadouts()
 
-        if (hasCameraPermission()) {
-            startCameraProvider()
-        } else {
+        if (!hasCameraPermission()) {
             updateCameraStatus("Requesting camera permission")
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
@@ -225,10 +268,81 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        isResumedForCamera = true
         enterFullscreenMode()
-        if (hasCameraPermission() && cameraProvider == null) {
+        if (hasCameraPermission()) {
             startCameraProvider()
+        } else {
+            showExposureStatus("카메라 권한이 필요합니다")
         }
+    }
+
+    override fun onPause() {
+        isResumedForCamera = false
+        stopCameraSession()
+        super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("step_mode", adjustmentStepLabel)
+        outState.putString("priority_mode", exposurePriority.code)
+        outState.putDouble("card_aperture", activeDialPresetSet.apertureValues[apertureIndex])
+        outState.putDouble("card_shutter", activeDialPresetSet.shutterValues[shutterIndex])
+        outState.putBoolean("startup_pending", startupPending)
+        outState.putBoolean("plain_auto_preview", previousPreview?.plainAuto ?: plainAutoPreview)
+        outState.putString("exposure_notice", if (oneShotMetering.busy)
+            "재측광 취소 · 이전 설정 유지" else exposureNotice)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun restoreFilmSettings(savedState: Bundle?) {
+        exposurePriority = ExposurePriority.restore(savedState?.getString("priority_mode") ?: runCatching {
+            previewPreferences.getString("exposure_priority", null)
+        }.getOrNull())
+        val presets = listOf(oneStopPreset, halfStopPreset, thirdStopPreset)
+        val savedIso = runCatching {
+            if (previewPreferences.contains("film_iso")) previewPreferences.getInt("film_iso", 100) else null
+        }.getOrNull()
+        val (presetIndex, restoredIsoIndex) = StartupExposure.restoreFilmIso(
+            savedIso, presets.map { it.isoValues }
+        )
+        val modeLabels = listOf("1stop", "1/2stop", "1/3stop")
+        val savedModeIndex = modeLabels.indexOf(savedState?.getString("step_mode"))
+        val filmIso = presets[presetIndex].isoValues[restoredIsoIndex]
+        val chosenPreset = savedModeIndex.takeIf { it >= 0 && filmIso in presets[it].isoValues }
+            ?: presetIndex
+        activeDialPresetSet = presets[chosenPreset]
+        adjustmentStepLabel = modeLabels[chosenPreset]
+        isoIndex = activeDialPresetSet.isoValues.indexOf(filmIso)
+        apertureIndex = nearestIndexDouble(activeDialPresetSet.apertureValues,
+            savedState?.getDouble("card_aperture", 4.0) ?: 4.0)
+        shutterIndex = nearestIndexDouble(activeDialPresetSet.shutterValues,
+            savedState?.getDouble("card_shutter", 1.0 / 60.0) ?: 1.0 / 60.0)
+        startupPending = savedState?.getBoolean("startup_pending", true) ?: true
+        plainAutoPreview = savedState?.getBoolean("plain_auto_preview", false) ?: false
+        exposureNotice = savedState?.getString("exposure_notice")
+    }
+
+    private fun stopCameraSession() {
+        if (oneShotMetering.restore()) {
+            plainAutoPreview = previousPreview?.plainAuto ?: plainAutoPreview
+            exposureNotice = "재측광 취소 · 이전 설정 유지"
+        }
+        cameraGeneration++
+        initialSelection = null
+        initialMeteringCards = null
+        cameraLoading = false
+        previewConfirmed = false
+        clearExposureTimeout()
+        requestGate.stop()
+        suppressSimulationTint()
+        activeCamera?.cameraInfo?.cameraState?.removeObservers(this)
+        activeCamera = null
+        try { cameraProvider?.unbindAll() } catch (_: Exception) { }
+        latestPhysicalAperture = null
+        latestPhysicalShutterSeconds = null
+        latestPhysicalIso = null
+        updateAutoMeterButton()
     }
 
     private fun enterFullscreenMode() {
@@ -309,6 +423,16 @@ class MainActivity : AppCompatActivity() {
             if (BuildConfig.DEBUG) {
                 previewFrame.addView(liveOverlay())
             }
+            exposureStatusText = label("", 13f, "#F5F1E8").apply {
+                setBackgroundColor(color("#CC111318"))
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                maxLines = 2
+                visibility = View.GONE
+            }
+            previewFrame.addView(exposureStatusText, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+            ))
             addView(previewFrame)
             if (BuildConfig.DEBUG) {
                 addView(space(10))
@@ -419,7 +543,25 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
 
-            addView(sectionHeader("Controls", "Swipe each dial up or down"))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(exposurePriorityControl(), LinearLayout.LayoutParams(0, dp(48), 1f))
+                addView(spaceHorizontal(8))
+                autoMeterButton = AppCompatButton(context).apply {
+                    text = getString(R.string.auto_meter_label)
+                    textSize = 14f
+                    setSingleLine(true)
+                    minWidth = dp(72)
+                    minimumHeight = dp(48)
+                    contentDescription = "현재 우선순위와 필름 ISO로 한 번 재측광"
+                    setOnClickListener { requestOneShotMetering() }
+                }
+                addView(autoMeterButton, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+                updateAutoMeterButton()
+            })
             addView(space(4))
             addView(LinearLayout(context).apply {
                 val stackOptions = resources.configuration.screenWidthDp < 360 ||
@@ -462,6 +604,70 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun exposurePriorityControl(): View {
+        priorityGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            isSaveEnabled = false
+            for (priority in ExposurePriority.entries) {
+                addView(AppCompatRadioButton(context).apply {
+                    id = View.generateViewId()
+                    tag = priority
+                    isSaveEnabled = false
+                    buttonDrawable = null
+                    text = getString(if (priority == ExposurePriority.APERTURE)
+                        R.string.priority_a_label else R.string.priority_s_label)
+                    contentDescription = getString(if (priority == ExposurePriority.APERTURE)
+                        R.string.priority_a_description else R.string.priority_s_description)
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    setPadding(dp(8), 0, dp(8), 0)
+                    setSingleLine(true)
+                    minWidth = dp(48)
+                }, RadioGroup.LayoutParams(0, dp(48), 1f))
+            }
+            val selected = (0 until childCount).map { getChildAt(it) }
+                .first { it.tag == exposurePriority }
+            check(selected.id)
+            setOnCheckedChangeListener { group, checkedId ->
+                val selectedPriority = group.findViewById<View>(checkedId)?.tag as? ExposurePriority
+                    ?: return@setOnCheckedChangeListener
+                changeExposurePriority(selectedPriority)
+            }
+        }
+        updatePriorityAppearance()
+        return priorityGroup
+    }
+
+    private fun updatePriorityAppearance() {
+        if (!::priorityGroup.isInitialized) return
+        for (index in 0 until priorityGroup.childCount) {
+            (priorityGroup.getChildAt(index) as AppCompatRadioButton).apply {
+                val selected = tag == exposurePriority
+                setBackgroundColor(color(if (selected) "#D6A84F" else "#252B35"))
+                setTextColor(color(if (selected) "#111318" else "#F5F1E8"))
+            }
+        }
+    }
+
+    private fun changeExposurePriority(next: ExposurePriority) {
+        if (next == exposurePriority) return
+        exposurePriority = next
+        previewPreferences.edit { putString("exposure_priority", next.code) }
+        updatePriorityAppearance()
+        when {
+            oneShotMetering.stage == OneShotMetering.Stage.MEASURING ||
+                oneShotMetering.stage == OneShotMetering.Stage.APPLYING ->
+                restoreOneShotPreview("우선순위 변경 · 이전 설정 유지")
+            startupPending && (requestGate.phase == ExposureRequestGate.Phase.STARTUP_AE ||
+                initialSelection != null) -> {
+                initialSelection = null
+                initialMeteringCards = null
+                fallbackToAutoPreview("우선순위 변경 · AUTO로 다시 측광")
+            }
+        }
+        updateAutoMeterButton()
+    }
+
     private fun applyPreviewColorMode() {
         // Only PreviewView is filtered. Exposure tint and debug text are sibling views.
         // No surface/provider or camera request changes are needed when toggling.
@@ -493,6 +699,7 @@ class MainActivity : AppCompatActivity() {
                     position: Int,
                     id: Long
                 ) {
+                    if (adjustmentStepLabel == modes[position]) return
                     adjustmentStepLabel = modes[position]
                     applyAdjustmentStepMode(adjustmentStepLabel)
                 }
@@ -599,8 +806,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onControlChanged() {
+        initialSelection = null
+        initialMeteringCards = null
+        oneShotMetering.cancel()
+        previousPreview = null
+        startupPending = false
+        plainAutoPreview = false
+        exposureNotice = null
+        previewPreferences.edit { putInt("film_iso", activeDialPresetSet.isoValues[isoIndex]) }
         applyRequestedCameraState()
         refreshExposureReadouts()
+        updateAutoMeterButton()
     }
 
     private fun refreshExposureReadouts() {
@@ -618,12 +834,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startCameraProvider() {
+        if (!isResumedForCamera || !hasCameraPermission() || cameraLoading || activeCamera != null) return
+        val generation = ++cameraGeneration
+        cameraLoading = true
+        showExposureStatus("카메라 준비 중…")
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
+            if (generation != cameraGeneration || !isResumedForCamera) return@addListener
+            cameraLoading = false
             try {
                 cameraProvider = future.get()
-                bindCamera()
+                if (hasCameraPermission()) bindCamera(generation)
             } catch (exception: Exception) {
+                clearExposureTimeout()
+                requestGate.stop()
+                suppressSimulationTint()
+                activeCamera = null
+                previewConfirmed = false
+                showExposureStatus("카메라 연결을 확인해주세요")
                 latestCaptureSummary = "Camera unavailable"
                 updateCameraStatus("Camera unavailable")
                 refreshExposureReadouts()
@@ -631,11 +859,12 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun bindCamera() {
+    private fun bindCamera(generation: Long) {
         val provider = cameraProvider ?: return
         val selector = selectCameraSelector(provider)
 
         if (selector == null) {
+            showExposureStatus("사용할 수 있는 카메라가 없습니다")
             latestCaptureSummary = "No usable camera found"
             updateCameraStatus("No usable camera found")
             refreshExposureReadouts()
@@ -655,7 +884,11 @@ class MainActivity : AppCompatActivity() {
                     request: CaptureRequest,
                     result: TotalCaptureResult
                 ) {
-                    handleCaptureResult(result)
+                    runOnUiThread {
+                        if (generation == cameraGeneration && isResumedForCamera && hasCameraPermission()) {
+                            handleCaptureResult(request, result)
+                        }
+                    }
                 }
             })
 
@@ -666,7 +899,22 @@ class MainActivity : AppCompatActivity() {
 
         activeCamera = provider.bindToLifecycle(this, selector, preview)
         inspectCameraCapabilities(activeCamera)
-        applyRequestedCameraState()
+        lastCaptureFrame = -1L
+        activeCamera?.cameraInfo?.cameraState?.observe(this) { state ->
+            if (generation == cameraGeneration && isResumedForCamera && state.error != null) {
+                if (oneShotMetering.restore()) exposureNotice = "재측광 중단 · 이전 설정 유지"
+                previewConfirmed = false
+                clearExposureTimeout()
+                requestGate.stop()
+                suppressSimulationTint()
+                showExposureStatus("카메라 연결을 확인해주세요")
+            }
+        }
+        if (oneShotMetering.stage == OneShotMetering.Stage.RESTORING && previousPreview != null)
+            restoreOneShotPreview(exposureNotice ?: "재측광 취소 · 이전 설정 유지")
+        else if (startupPending) startInitialAutoExposure()
+        else if (plainAutoPreview) fallbackToAutoPreview(exposureNotice ?: "자동 프리뷰")
+        else applyRequestedCameraState()
         updateCameraStatus(buildCameraStatus())
         latestCaptureSummary = buildCameraMetadataSummary()
         refreshExposureReadouts()
@@ -710,16 +958,207 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun applyRequestedCameraState() {
-        val camera = activeCamera ?: return
+    private fun showExposureStatus(message: String?) {
+        if (!::exposureStatusText.isInitialized) return
+        exposureStatusText.text = message.orEmpty()
+        exposureStatusText.visibility = if (message.isNullOrEmpty()) View.GONE else View.VISIBLE
+        updateAutoMeterButton()
+    }
 
-        val targetSnapshot = buildExposureSnapshot()
+    private fun canRequestMetering(): Boolean = isResumedForCamera && hasCameraPermission() &&
+        activeCamera != null && previewConfirmed && !startupPending && !oneShotMetering.busy &&
+        (requestGate.phase == ExposureRequestGate.Phase.MANUAL ||
+            requestGate.phase == ExposureRequestGate.Phase.AUTO_PREVIEW)
+
+    private fun updateAutoMeterButton() {
+        if (!::autoMeterButton.isInitialized) return
+        autoMeterButton.isEnabled = canRequestMetering()
+        ViewCompat.setStateDescription(autoMeterButton,
+            if (oneShotMetering.stage == OneShotMetering.Stage.RESTORING) "이전 프리뷰 복원 중" else
+                if (oneShotMetering.busy) "재측광 중" else
+                if (autoMeterButton.isEnabled) "한 번 재측광" else "카메라 준비 중 또는 사용할 수 없음")
+    }
+
+    private fun requestOneShotMetering() {
+        val options = lastRequestOptions ?: return
+        val expected = expectedRequest ?: return
+        val cards = MeteringCards(activeDialPresetSet.apertureValues[apertureIndex],
+            activeDialPresetSet.shutterValues[shutterIndex], activeDialPresetSet.isoValues[isoIndex])
+        if (!oneShotMetering.begin(cards, canRequestMetering(), exposurePriority)) return
+        previousPreview = PreviewSnapshot(options, expected, requestGate.phase, plainAutoPreview)
+        plainAutoPreview = false
+        showExposureStatus("재측광 중…")
+        val token = submitExposureRequest(autoExposureOptions(),
+            ExpectedExposureRequest(CaptureRequest.CONTROL_AE_MODE_ON, compensation = 0),
+            ExposureRequestGate.Phase.REQUESTED_AE)
+        if (token == requestGate.token) {
+            scheduleExposureTimeout(token, 4_000L) {
+                restoreOneShotPreview("재측광 실패 · 이전 설정 유지")
+            }
+        }
+    }
+
+    private fun restoreOneShotPreview(message: String) {
+        val previous = previousPreview
+        if (!oneShotMetering.busy) return
+        if (previous == null) {
+            oneShotMetering.cancel()
+            fallbackToAutoPreview("재측광 실패 · 자동 프리뷰")
+            return
+        }
+        oneShotMetering.restore()
+        plainAutoPreview = previous.plainAuto
+        exposureNotice = message
+        showExposureStatus(if (message.contains("실패")) "재측광 실패 · 이전 프리뷰 복원 중…"
+            else "재측광 취소 · 이전 프리뷰 복원 중…")
+        submitExposureRequest(previous.options, previous.expected, previous.phase)
+    }
+
+    private fun clearExposureTimeout() {
+        exposureTimeout?.let { simulationTintHandler.removeCallbacks(it) }
+        exposureTimeout = null
+    }
+
+    private fun scheduleExposureTimeout(token: Long, delayMs: Long, action: () -> Unit) {
+        clearExposureTimeout()
+        exposureTimeout = Runnable {
+            exposureTimeout = null
+            if (isResumedForCamera && requestGate.token == token) action()
+        }.also { simulationTintHandler.postDelayed(it, delayMs) }
+    }
+
+    private fun autoExposureOptions(compensation: Int = 0): CaptureRequestOptions =
+        CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, false)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, compensation)
+            .setCaptureRequestOption(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+            .build()
+
+    private fun submitExposureRequest(
+        options: CaptureRequestOptions,
+        expected: ExpectedExposureRequest,
+        phase: ExposureRequestGate.Phase,
+        recoverOnFailure: Boolean = true
+    ): Long {
+        val keepAppliedTint = requestGate.keepsAppliedTint(phase, plainAutoPreview)
+        val token = requestGate.begin(phase)
+        val generation = cameraGeneration
+        previewConfirmed = false
+        lastRequestOptions = options
+        expectedRequest = expected
+        clearExposureTimeout()
+        suppressSimulationTint(clearAppliedTint = !keepAppliedTint)
+        updateAutoMeterButton()
+        fun failed() {
+            if (generation != cameraGeneration || token != requestGate.token || !isResumedForCamera) return
+            when {
+                !recoverOnFailure -> showExposureStatus("자동 프리뷰 연결을 확인해주세요")
+                oneShotMetering.stage == OneShotMetering.Stage.RESTORING -> {
+                    oneShotMetering.cancel()
+                    previousPreview = null
+                    fallbackToAutoPreview("이전 설정 복원 실패 · 자동 프리뷰")
+                }
+                oneShotMetering.busy -> restoreOneShotPreview("재측광 실패 · 이전 설정 유지")
+                else -> fallbackToAutoPreview("설정 적용 실패 · 자동 프리뷰")
+            }
+        }
+        try {
+            val camera = activeCamera ?: return token
+            val future = Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
+            future.addListener({
+                if (generation == cameraGeneration && token == requestGate.token && isResumedForCamera) {
+                    try {
+                        future.get()
+                        // Completion identifies an applied repeating request, not display-frame sync.
+                        requestGate.applied(token, lastCaptureFrame)
+                    } catch (_: Exception) { failed() }
+                }
+            }, ContextCompat.getMainExecutor(this))
+        } catch (_: Exception) { failed() }
+        if (phase != ExposureRequestGate.Phase.STARTUP_AE &&
+            phase != ExposureRequestGate.Phase.REQUESTED_AE && token == requestGate.token) {
+            scheduleExposureTimeout(token, 2_000L) { failed() }
+        }
+        return token
+    }
+
+    private fun startInitialAutoExposure() {
+        startupAeProbe.reset()
+        initialSelection = null
+        initialMeteringPriority = exposurePriority
+        initialMeteringCards = MeteringCards(activeDialPresetSet.apertureValues[apertureIndex],
+            activeDialPresetSet.shutterValues[shutterIndex], activeDialPresetSet.isoValues[isoIndex])
+        showExposureStatus("노출 맞추는 중…")
+        val token = submitExposureRequest(autoExposureOptions(),
+            ExpectedExposureRequest(CaptureRequest.CONTROL_AE_MODE_ON, compensation = 0),
+            ExposureRequestGate.Phase.STARTUP_AE)
+        if (token != requestGate.token) return
+        scheduleExposureTimeout(token, 4_000L) {
+            val reading = startupAeProbe.lastReading
+            if (reading == null) fallbackToAutoPreview("자동 설정 실패 · 자동 프리뷰")
+            else finishInitialAutoExposure(reading, converged = false)
+        }
+    }
+
+    private fun finishInitialAutoExposure(reading: ExposureReading, converged: Boolean) {
+        if (!startupPending || requestGate.phase != ExposureRequestGate.Phase.STARTUP_AE) return
+        clearExposureTimeout()
+        val cards = initialMeteringCards ?: return
+        val choice = StartupExposure.choose(initialMeteringPriority, reading, cards,
+            meteringCandidates(initialMeteringPriority))
+        initialSelection = choice
+        initialConverged = converged
+        applyRequestedCameraState(choice)
+        refreshExposureReadouts()
+    }
+
+    private fun meteringCandidates(priority: ExposurePriority): List<Double> =
+        if (priority == ExposurePriority.APERTURE) activeDialPresetSet.shutterValues
+        else activeDialPresetSet.apertureValues
+
+    private fun commitExposureSelection(choice: ExposureSelection, withinNotice: String? = null) {
+        if (choice.priority == ExposurePriority.APERTURE) {
+            shutterIndex = choice.index
+            shutterDialCard.updateItems(activeDialPresetSet.shutterLabels, shutterIndex)
+        } else {
+            apertureIndex = choice.index
+            apertureDialCard.updateItems(activeDialPresetSet.apertureLabels, apertureIndex)
+        }
+        exposureNotice = when (choice.range) {
+            PresetExposureRange.TOO_BRIGHT -> "설정 범위 초과 · 너무 밝음"
+            PresetExposureRange.TOO_DARK -> "설정 범위 초과 · 너무 어두움"
+            PresetExposureRange.WITHIN -> withinNotice
+        }
+    }
+
+    private fun fallbackToAutoPreview(message: String) {
+        initialSelection = null
+        initialMeteringCards = null
+        startupPending = false
+        plainAutoPreview = true
+        exposureNotice = message
+        showExposureStatus(message)
+        submitExposureRequest(autoExposureOptions(),
+            ExpectedExposureRequest(CaptureRequest.CONTROL_AE_MODE_ON, compensation = 0),
+            ExposureRequestGate.Phase.AUTO_PREVIEW, recoverOnFailure = false)
+    }
+
+    private fun applyRequestedCameraState(selection: ExposureSelection? = null) {
+        val camera = activeCamera ?: return
+        if (!isResumedForCamera) return
+        showExposureStatus("설정 적용 중…")
+
+        val targetSnapshot = buildExposureSnapshot(selection)
         val currentPhysical = currentPhysicalState()
         var residualEv = targetSnapshot.virtualBrightnessEv100 - targetSnapshot.physicalBrightnessEv100
 
         if (supportsManualSensor) {
-            val requestedAperture = activeDialPresetSet.apertureValues[apertureIndex]
-            val requestedShutterSeconds = activeDialPresetSet.shutterValues[shutterIndex]
+            val requestedAperture = if (selection?.priority == ExposurePriority.SHUTTER)
+                activeDialPresetSet.apertureValues[selection.index] else activeDialPresetSet.apertureValues[apertureIndex]
+            val requestedShutterSeconds = if (selection?.priority == ExposurePriority.APERTURE)
+                activeDialPresetSet.shutterValues[selection.index] else activeDialPresetSet.shutterValues[shutterIndex]
             val requestedIso = activeDialPresetSet.isoValues[isoIndex]
 
             val physicalAperture = chooseApertureForDevice(requestedAperture)?.toDouble()
@@ -754,9 +1193,10 @@ class MainActivity : AppCompatActivity() {
                 optionsBuilder.setCaptureRequestOption(CaptureRequest.LENS_APERTURE, chosenAperture)
             }
 
-            Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(
-                optionsBuilder.build()
-            )
+            submitExposureRequest(optionsBuilder.build(), ExpectedExposureRequest(
+                CaptureRequest.CONTROL_AE_MODE_OFF, finalExposureNanos, finalIso,
+                chooseApertureForDevice(requestedAperture)
+            ), ExposureRequestGate.Phase.MANUAL)
             updateCameraStatus(buildCameraStatus())
         } else {
             val exposureState = camera.cameraInfo.exposureState
@@ -765,7 +1205,9 @@ class MainActivity : AppCompatActivity() {
                 exposureState.exposureCompensationRange.lower,
                 exposureState.exposureCompensationRange.upper
             )
-            camera.cameraControl.setExposureCompensationIndex(compensationIndex)
+            submitExposureRequest(autoExposureOptions(compensationIndex),
+                ExpectedExposureRequest(CaptureRequest.CONTROL_AE_MODE_ON, compensation = compensationIndex),
+                ExposureRequestGate.Phase.AUTO_PREVIEW)
             updateCameraStatus("Preview only - simulating exposure")
         }
 
@@ -897,30 +1339,70 @@ class MainActivity : AppCompatActivity() {
         return chosen
     }
 
-    private fun handleCaptureResult(result: TotalCaptureResult) {
+    private fun handleCaptureResult(request: CaptureRequest, result: TotalCaptureResult) {
+        if (result.frameNumber <= lastCaptureFrame) return
+        lastCaptureFrame = result.frameNumber
+        val expected = expectedRequest ?: return
+        val matchesRequest = expected.matches(
+            request.get(CaptureRequest.CONTROL_AE_MODE), result.get(CaptureResult.CONTROL_AE_MODE),
+            request.get(CaptureRequest.SENSOR_EXPOSURE_TIME), request.get(CaptureRequest.SENSOR_SENSITIVITY),
+            request.get(CaptureRequest.LENS_APERTURE), request.get(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION)
+        )
+        if (!requestGate.accepts(requestGate.token, result.frameNumber, matchesRequest)) return
         val exposureTimeNanos = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
         val sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY)
         val aperture = result.get(CaptureResult.LENS_APERTURE)
 
         val exposureSeconds = exposureTimeNanos?.toDouble()?.div(1_000_000_000.0)
-        if (exposureSeconds != null && aperture != null) {
-            latestPhysicalAperture = aperture.toDouble()
-            latestPhysicalShutterSeconds = exposureSeconds
-            latestPhysicalIso = sensitivity
-        }
-
         latestCaptureSummary = buildCaptureSummary(result, exposureSeconds, sensitivity, aperture)
+        val reading = ExposureReading.from(aperture?.toDouble(), exposureTimeNanos, sensitivity)
+            ?: return
+        latestPhysicalAperture = reading.aperture
+        latestPhysicalShutterSeconds = reading.seconds
+        latestPhysicalIso = reading.iso
+        if (requestGate.phase == ExposureRequestGate.Phase.STARTUP_AE) {
+            startupAeProbe.observe(reading, result.get(CaptureResult.CONTROL_AE_STATE)?.let {
+                it == CaptureResult.CONTROL_AE_STATE_CONVERGED
+            })?.let { finishInitialAutoExposure(it, converged = true) }
+            refreshExposureReadouts()
+            return
+        }
+        if (requestGate.phase == ExposureRequestGate.Phase.REQUESTED_AE) {
+            val choice = oneShotMetering.observe(reading, result.get(CaptureResult.CONTROL_AE_STATE)?.let {
+                it == CaptureResult.CONTROL_AE_STATE_CONVERGED
+            }, meteringCandidates(oneShotMetering.priority))
+            if (choice != null) applyRequestedCameraState(choice)
+            refreshExposureReadouts()
+            return
+        }
+        initialSelection?.let { choice ->
+            initialSelection = null
+            initialMeteringCards = null
+            startupPending = false
+            commitExposureSelection(choice, if (initialConverged) null else "자동 설정 확인 필요")
+        }
+        oneShotMetering.applied()?.let { choice ->
+            commitExposureSelection(choice)
+            previousPreview = null
+        }
+        if (oneShotMetering.restored()) previousPreview = null
+        previewConfirmed = true
+        clearExposureTimeout()
+        showExposureStatus(exposureNotice ?: if (!supportsManualSensor) "자동 프리뷰 · 수동 제어 미지원" else null)
         val snapshot = buildExposureSnapshot()
         previewResidualEv = snapshot.virtualBrightnessEv100 - snapshot.physicalBrightnessEv100
-        runOnUiThread {
-            refreshExposureReadouts()
+        refreshExposureReadouts()
+        if (!plainAutoPreview) {
+            tintReady = true
             scheduleSimulationTint(previewResidualEv)
         }
     }
 
-    private fun buildExposureSnapshot(): ExposureSnapshot {
-        val requestedAperture = activeDialPresetSet.apertureValues[apertureIndex]
-        val requestedShutterSeconds = activeDialPresetSet.shutterValues[shutterIndex]
+    private fun buildExposureSnapshot(selection: ExposureSelection? = null): ExposureSnapshot {
+        val requestedAperture = if (selection?.priority == ExposurePriority.SHUTTER)
+            activeDialPresetSet.apertureValues[selection.index] else activeDialPresetSet.apertureValues[apertureIndex]
+        val requestedShutterSeconds = if (selection?.priority == ExposurePriority.APERTURE)
+            activeDialPresetSet.shutterValues[selection.index] else activeDialPresetSet.shutterValues[shutterIndex]
         val requestedIso = activeDialPresetSet.isoValues[isoIndex]
         val currentPhysical = currentPhysicalState()
 
@@ -1030,19 +1512,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         val intensity = (1.0 - 2.0.pow(-abs(deltaEv))).toFloat()
-        if (intensity <= 0f) {
-            simulationTintView.animate().alpha(0f).setDuration(140L).start()
-            return
-        }
-
+        simulationTintView.animate().cancel()
         simulationTintView.setBackgroundColor(if (deltaEv >= 0) Color.WHITE else Color.BLACK)
-        simulationTintView.animate().alpha(intensity).setDuration(140L).start()
+        simulationTintView.alpha = intensity
+    }
+
+    private fun suppressSimulationTint(clearAppliedTint: Boolean = true) {
+        tintReady = false
+        tintScheduled = false
+        simulationTintHandler.removeCallbacks(applySimulationTintRunnable)
+        if (::simulationTintView.isInitialized) {
+            simulationTintView.animate().cancel()
+            if (clearAppliedTint) simulationTintView.alpha = 0f
+        }
     }
 
     private fun scheduleSimulationTint(deltaEv: Double) {
         pendingSimulationTintEv = deltaEv
-        simulationTintHandler.removeCallbacks(applySimulationTintRunnable)
-        simulationTintHandler.postDelayed(applySimulationTintRunnable, 90L)
+        tintToken = requestGate.token
+        if (!tintScheduled) {
+            tintScheduled = true
+            simulationTintHandler.postDelayed(applySimulationTintRunnable, 16L)
+        }
     }
 
     private fun calculateSettingEv100(aperture: Double, shutterSeconds: Double): Double {
@@ -1273,6 +1764,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun updateItems(newLabels: List<String>, selectedIndex: Int) {
+            transitionAnimator?.cancel()
+            transitionAnimator = null
             currentLabels = newLabels
             this.selectedIndex = selectedIndex.coerceIn(0, newLabels.lastIndex)
             currentValueText.text = currentLabels[this.selectedIndex]
